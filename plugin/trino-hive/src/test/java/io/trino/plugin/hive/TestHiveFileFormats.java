@@ -944,7 +944,7 @@ public final class TestHiveFileFormats
                 .isFailingForPageSource(fileSystemFactory -> new ParquetPageSourceFactory(fileSystemFactory, STATS, new ParquetReaderConfig(), new HiveConfig()), expectedErrorCode, expectedMessage);
     }
 
-    private static void testPageSourceFactory(
+    public static void testPageSourceFactory(
             HivePageSourceFactory sourceFactory,
             Location location,
             HiveStorageFormat storageFormat,

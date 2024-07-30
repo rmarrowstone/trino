@@ -1,128 +1,121 @@
 package io.trino.hive.formats.ion;
 
-import com.amazon.ionhiveserde.IonHiveSerDe;
-import com.amazon.ionhiveserde.objectinspectors.factories.IonObjectInspectorFactory;
-import com.google.common.collect.ImmutableMap;
-import io.trino.hive.formats.FormatTestUtils;
+import com.amazon.ion.IonReader;
+import com.amazon.ion.system.IonReaderBuilder;
 import io.trino.hive.formats.line.Column;
-import io.trino.hive.formats.line.LineDeserializer;
-import io.trino.hive.formats.line.LineSerializer;
-import io.trino.hive.formats.line.openxjson.OpenXJsonOptions;
-import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
-import org.apache.hadoop.hive.serde2.SerDeException;
-import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.StructField;
-import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
-import org.apache.hadoop.io.Text;
+import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.RowType;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.TestInstantiationException;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.IntStream;
 
-import static io.trino.hive.formats.FormatTestUtils.createLineBuffer;
+import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
 import static io.trino.hive.formats.FormatTestUtils.readTrinoValues;
-import static io.trino.spi.type.SmallintType.SMALLINT;
-import static java.util.stream.Collectors.joining;
-import static org.apache.hadoop.hive.serde.serdeConstants.LIST_COLUMNS;
-import static org.apache.hadoop.hive.serde.serdeConstants.LIST_COLUMN_TYPES;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.RowType.field;
+import static io.trino.spi.type.VarcharType.VARCHAR;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
-/**
- * Verifies that the trino native Ion format behaves as the legacy IonHiveSerDe.
- */
-public class TestIonFormat {
+public class TestIonFormat
+{
 
     @Test
-    public void testEmptyStructWithNoColumns() {
-        assertRead(List.of(), "{}", List.of());
-    }
-
-    @Test
-    public void testSimpleStructWithInteger() {
-        assertRead(
-                List.of(new Column("foo", SMALLINT, 0)),
-                "{ foo: 31 }",
-                List.of(31));
-    }
-
-    private void assertRead(List<Column> columns, String ionText, List<Object> expected) {
-        final List<Object> hiveResult = readTextHive(columns, ionText);
-        //final List<Object> trinoResult = readTextTrino(columns, ionText);
-
-        assertEquals(expected, hiveResult);
-        //assertEquals(expected, trinoResult);
-    }
-
-    private List<Object> readTextHive(List<Column> columns, String ionText) {
-        final IonHiveSerDe serde = buildIonHiveSerDe(columns, new Properties());
-        try {
-            final Object row = serde.deserialize(new Text(ionText));
-
-            List<Object> fieldValues = new ArrayList<>();
-            StructObjectInspector rowInspector = (StructObjectInspector) serde.getObjectInspector();
-            // todo: need to wire up the object inspectors to get the values as hive values and not ion
-            return columns.stream()
-                    .map(column -> {
-                        final var fieldRef = rowInspector.getStructFieldRef(column.name());
-                        rowInspector.getStructFieldData(row, fieldRef);
-
-                        fieldRef.getFieldObjectInspector().
-                    }).toList();
-        } catch (SerDeException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private static IonHiveSerDe buildIonHiveSerDe(List<Column> columns, Properties props) {
-        final var serde = new IonHiveSerDe();
-        props.putAll(createIonSerDeColumnProperties(columns));
-
-        try {
-            serde.initialize(null, props);
-            return serde;
-        } catch (SerDeException e) {
-            throw new TestInstantiationException("failed to initialize serde", e);
-        }
-    }
-
-    private List<Object> readTextTrino(List<Column> columns, String ionText) {
-        final LineDeserializer deserializer = buildIonDeserializer(columns, Map.of());
-        try {
-            PageBuilder pageBuilder = new PageBuilder(1, deserializer.getTypes());
-            deserializer.deserialize(createLineBuffer(ionText), pageBuilder);
-            Page page = pageBuilder.build();
-            return readTrinoValues(columns, page, 0);
-        }
-        catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    private static LineDeserializer buildIonDeserializer(List<Column> columns, Map<String, String> props) {
-        return new IonDeserializerFactory().create(columns, props);
-    }
-
-    private static LineSerializer buildIonSerializer(List<Column> columns, Map<String, String> props) {
-        return new IonSerializerFactory().create(columns, props);
-    }
-
-    private static Map<String, String> createIonSerDeColumnProperties(List<Column> columns)
+    public void testSuperBasicStruct()
+            throws IOException
     {
-        ImmutableMap.Builder<String, String> schema = ImmutableMap.builder();
-        schema.put(LIST_COLUMNS, columns.stream()
-                .sorted(Comparator.comparing(Column::ordinal))
-                .map(Column::name)
-                .collect(joining(",")));
-        schema.put(LIST_COLUMN_TYPES, columns.stream()
-                .sorted(Comparator.comparing(Column::ordinal))
-                .map(Column::type)
-                .map(FormatTestUtils::getJavaObjectInspector)
-                .map(ObjectInspector::getTypeName)
-                .collect(joining(",")));
-        return schema.buildOrThrow();
+        assertValue(
+                RowType.rowType(
+                        field("foo", INTEGER),
+                        field("bar", VARCHAR)),
+                "{ bar: baz, foo: 31, ignored: true }",
+                List.of(31, "baz"));
+    }
+
+    @Test
+    public void testStructWithNullAndMissingValues()
+            throws IOException
+    {
+        final List<Object> listWithNulls = new ArrayList<>();
+        listWithNulls.add(null);
+        listWithNulls.add(null);
+
+        assertValue(
+                RowType.rowType(
+                        field("foo", INTEGER),
+                        field("bar", VARCHAR)),
+                "{ bar: null.symbol }",
+                listWithNulls);
+    }
+
+    // todo: test for mistyped null and non-null values
+
+    @Test
+    public void testNestedList()
+            throws IOException
+    {
+        assertValue(
+                RowType.rowType(
+                        field("primes", new ArrayType(INTEGER))),
+                "{ primes: [ 17, 31, 51 ] }",
+                List.of(List.of(17, 31, 51))); // todo: wrap in struct
+    }
+
+    @Test
+    public void testNestedStruct()
+            throws IOException
+    {
+        assertValue(
+                RowType.rowType(
+                        field("name", RowType.rowType(
+                                field("first", VARCHAR),
+                                field("last", VARCHAR)))),
+                "{ name: { first: Woody, last: Guthrie } }",
+                List.of(List.of("Woody", "Guthrie"))); // todo: wrap in struct
+    }
+
+    @Test
+    public void testStructInList()
+            throws IOException
+    {
+        assertValue(
+                RowType.rowType(
+                        field("elements", new ArrayType(
+                                RowType.rowType(
+                                        field("foo", INTEGER))))),
+                "{ elements: [ { foo: 13 }, { foo: 17 } ] }",
+                // yes, there are three layers of list here:
+                // top-level struct (row), list of elements (array), then inner struct (row)
+                List.of(
+                        List.of(List.of(13), List.of(17)))); // todo: expected data
+    }
+
+    private void assertValue(RowType rowType, String ionText, List<Object> expected)
+            throws IOException
+    {
+        final List<RowType.Field> fields = rowType.getFields();
+        final List<Column> columns = IntStream.range(0, fields.size())
+                .boxed()
+                .map(i -> {
+                    final RowType.Field field = fields.get(i);
+                    return new Column(field.getName().get(), field.getType(), i);
+                })
+                .toList();
+        final IonDecoder decoder = IonDecoderFactory.buildDecoder(columns);
+        final PageBuilder pageBuilder = new PageBuilder(1, rowType.getFields().stream().map(RowType.Field::getType).toList());
+
+        try (IonReader ionReader = IonReaderBuilder.standard().build(ionText)) {
+            assertNotNull(ionReader.next());
+            pageBuilder.declarePosition();
+            decoder.decode(ionReader, pageBuilder);
+            assertNull(ionReader.next());
+        }
+
+        final List<Object> actual = readTrinoValues(columns, pageBuilder.build(), 0);
+        assertColumnValuesEquals(columns, actual, expected);
     }
 }

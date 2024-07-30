@@ -95,6 +95,12 @@
         </dependency>
 
         <dependency>
+            <groupId>com.amazon.ion</groupId>
+            <artifactId>ion-java</artifactId>
+            <version>1.11.9</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.gaul</groupId>
             <artifactId>modernizer-maven-annotations</artifactId>
         </dependency>
