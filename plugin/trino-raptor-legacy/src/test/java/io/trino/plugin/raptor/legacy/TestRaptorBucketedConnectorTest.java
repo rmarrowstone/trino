@@ -13,11 +13,9 @@
  */
 package io.trino.plugin.raptor.legacy;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
-import static io.trino.plugin.raptor.legacy.RaptorQueryRunner.createRaptorQueryRunner;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestRaptorBucketedConnectorTest
@@ -27,7 +25,11 @@ public class TestRaptorBucketedConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createRaptorQueryRunner(ImmutableMap.of(), REQUIRED_TPCH_TABLES, true, ImmutableMap.of());
+        return RaptorQueryRunner.builder()
+                .enableBucketed()
+                .addConnectorProperty("storage.compaction-enabled", "false")
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Test

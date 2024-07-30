@@ -39,7 +39,7 @@ public class TestingH2JdbcModule
 
     public TestingH2JdbcModule()
     {
-        this((config, connectionFactory, identifierMapping) -> new TestingH2JdbcClient(config, connectionFactory, identifierMapping));
+        this(TestingH2JdbcClient::new);
     }
 
     public TestingH2JdbcModule(TestingH2JdbcClientFactory testingH2JdbcClientFactory)
@@ -66,17 +66,19 @@ public class TestingH2JdbcModule
     @ForBaseJdbc
     public ConnectionFactory getConnectionFactory(BaseJdbcConfig config, CredentialProvider credentialProvider)
     {
-        return new DriverConnectionFactory(new Driver(), config, credentialProvider);
+        return DriverConnectionFactory.builder(new Driver(), config.getConnectionUrl(), credentialProvider).build();
     }
 
     public static Map<String, String> createProperties()
     {
-        return ImmutableMap.of("connection-url", createH2ConnectionUrl());
+        return ImmutableMap.of(
+                "connection-url", createH2ConnectionUrl(),
+                "bootstrap.quiet", "true");
     }
 
     public static String createH2ConnectionUrl()
     {
-        return format("jdbc:h2:mem:test%s;DB_CLOSE_DELAY=-1", System.nanoTime() + ThreadLocalRandom.current().nextLong());
+        return format("jdbc:h2:mem:test%s;DB_CLOSE_DELAY=-1;DEFAULT_LOCK_TIMEOUT=5000", System.nanoTime() + ThreadLocalRandom.current().nextLong());
     }
 
     public interface TestingH2JdbcClientFactory

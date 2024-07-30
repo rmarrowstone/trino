@@ -42,6 +42,7 @@ import io.trino.spi.function.AggregationImplementation.AccumulatorStateDescripto
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.FunctionNullability;
 import io.trino.spi.function.GroupedAccumulatorState;
+import io.trino.spi.function.WindowAccumulator;
 import io.trino.spi.function.WindowIndex;
 import io.trino.sql.gen.Binding;
 import io.trino.sql.gen.CallSiteBinder;
@@ -55,6 +56,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -218,7 +220,7 @@ public final class AccumulatorCompiler
             generateGroupedEvaluateFinal(definition, stateFields, implementation.getOutputFunction(), callSiteBinder);
         }
         else {
-            generateEvaluateFinal(definition, stateFields, implementation.getOutputFunction(), callSiteBinder);
+            generateEvaluateFinal(definition, "evaluateFinal", stateFields, implementation.getOutputFunction(), callSiteBinder);
         }
 
         if (grouped) {
@@ -234,11 +236,19 @@ public final class AccumulatorCompiler
         }
     }
 
-    public static Constructor<? extends WindowAccumulator> generateWindowAccumulatorClass(
+    /**
+     * @return a factory for window accumulators with provided lambda parameter providers
+     */
+    public static Function<List<Supplier<Object>>, WindowAccumulator> generateWindowAccumulatorClass(
             BoundSignature boundSignature,
             AggregationImplementation implementation,
             FunctionNullability functionNullability)
     {
+        var windowAccumulator = implementation.getWindowAccumulator();
+        if (windowAccumulator.isPresent()) {
+            return createWindowAccumulatorFactory(windowAccumulator.get());
+        }
+
         // change types used in Aggregation methods to types used in the core Trino engine to simplify code generation
         implementation = normalizeAggregationMethods(implementation);
 
@@ -287,34 +297,54 @@ public final class AccumulatorCompiler
 
         // Generate methods
         generateCopy(definition, WindowAccumulator.class);
-        generateAddOrRemoveInputWindowIndex(
+        generateAddInputWindowIndex(
                 definition,
                 stateFields,
                 argumentNullable,
                 lambdaProviderFields,
                 implementation.getInputFunction(),
-                "addInput",
                 callSiteBinder);
-        implementation.getRemoveInputFunction().ifPresent(
-                removeInputFunction -> generateAddOrRemoveInputWindowIndex(
-                        definition,
-                        stateFields,
-                        argumentNullable,
-                        lambdaProviderFields,
-                        removeInputFunction,
-                        "removeInput",
-                        callSiteBinder));
 
-        generateEvaluateFinal(definition, stateFields, implementation.getOutputFunction(), callSiteBinder);
+        generateEvaluateFinal(definition, "output", stateFields, implementation.getOutputFunction(), callSiteBinder);
         generateGetEstimatedSize(definition, stateFields);
 
         Class<? extends WindowAccumulator> windowAccumulatorClass = defineClass(definition, WindowAccumulator.class, callSiteBinder.getBindings(), classLoader);
+        return createWindowAccumulatorFactory(windowAccumulatorClass);
+    }
+
+    /**
+     * @return a factory for window accumulators with provided lambda parameter providers
+     */
+    private static Function<List<Supplier<Object>>, WindowAccumulator> createWindowAccumulatorFactory(Class<? extends WindowAccumulator> windowAccumulator)
+    {
         try {
-            return windowAccumulatorClass.getConstructor(List.class);
+            var constructor = windowAccumulator.getConstructor(List.class);
+            return lambdaProviders -> {
+                try {
+                    return constructor.newInstance(lambdaProviders);
+                }
+                catch (ReflectiveOperationException e) {
+                    throw new RuntimeException(e);
+                }
+            };
         }
-        catch (NoSuchMethodException e) {
-            throw new RuntimeException(e);
+        catch (ReflectiveOperationException _) {
         }
+
+        try {
+            var constructor = windowAccumulator.getConstructor();
+            return lambdaProviders -> {
+                try {
+                    return constructor.newInstance();
+                }
+                catch (ReflectiveOperationException e) {
+                    throw new RuntimeException(e);
+                }
+            };
+        }
+        catch (ReflectiveOperationException _) {
+        }
+        throw new RuntimeException(format("Window accumulator class %s does not have a constructor with a single List argument or a no-argument constructor", windowAccumulator.getName()));
     }
 
     private static void generateWindowAccumulatorConstructor(
@@ -357,7 +387,7 @@ public final class AccumulatorCompiler
 
     private static void generateSetGroupCount(ClassDefinition definition, List<FieldDefinition> stateFields)
     {
-        Parameter groupCount = arg("groupCount", long.class);
+        Parameter groupCount = arg("groupCount", int.class);
 
         MethodDefinition method = definition.declareMethod(a(PUBLIC), "setGroupCount", type(void.class), groupCount);
         BytecodeBlock body = method.getBody();
@@ -417,13 +447,12 @@ public final class AccumulatorCompiler
         body.ret();
     }
 
-    private static void generateAddOrRemoveInputWindowIndex(
+    private static void generateAddInputWindowIndex(
             ClassDefinition definition,
             List<FieldDefinition> stateField,
             List<Boolean> argumentNullable,
             List<FieldDefinition> lambdaProviderFields,
             MethodHandle inputFunction,
-            String generatedFunctionName,
             CallSiteBinder callSiteBinder)
     {
         // TODO: implement masking based on maskChannel field once Window Functions support DISTINCT arguments to the functions.
@@ -434,7 +463,7 @@ public final class AccumulatorCompiler
 
         MethodDefinition method = definition.declareMethod(
                 a(PUBLIC),
-                generatedFunctionName,
+                "addInput",
                 type(void.class),
                 ImmutableList.of(index, startPosition, endPosition));
         Scope scope = method.getScope();
@@ -462,7 +491,7 @@ public final class AccumulatorCompiler
         invokeInputFunction.append(invokeDynamic(
                 BOOTSTRAP_METHOD,
                 ImmutableList.of(binding.getBindingId()),
-                generatedFunctionName,
+                "addInput",
                 binding.getType(),
                 getInvokeFunctionOnWindowIndexParameters(
                         scope.getThis(),
@@ -714,7 +743,7 @@ public final class AccumulatorCompiler
         for (FieldDefinition stateField : stateFields) {
             if (grouped) {
                 Variable groupIds = scope.getVariable("groupIds");
-                loopBody.append(thisVariable.getField(stateField).invoke("setGroupId", void.class, groupIds.getElement(position).cast(long.class)));
+                loopBody.append(thisVariable.getField(stateField).invoke("setGroupId", void.class, groupIds.getElement(position)));
             }
             loopBody.append(thisVariable.getField(stateField));
         }
@@ -738,7 +767,7 @@ public final class AccumulatorCompiler
         Variable groupIds = scope.getVariable("groupIds");
         for (FieldDefinition stateField : stateFields) {
             BytecodeExpression state = scope.getThis().getField(stateField);
-            block.append(state.invoke("setGroupId", void.class, groupIds.getElement(position).cast(long.class)));
+            block.append(state.invoke("setGroupId", void.class, groupIds.getElement(position)));
         }
     }
 
@@ -808,14 +837,14 @@ public final class AccumulatorCompiler
             BytecodeExpression stateSerializer = thisVariable.getField(getOnlyElement(stateFieldAndDescriptors).getStateSerializerField());
             BytecodeExpression state = thisVariable.getField(getOnlyElement(stateFieldAndDescriptors).getStateField());
 
-            body.append(state.invoke("setGroupId", void.class, groupId.cast(long.class)))
+            body.append(state.invoke("setGroupId", void.class, groupId))
                     .append(stateSerializer.invoke("serialize", void.class, state.cast(AccumulatorState.class), out))
                     .ret();
         }
         else {
             for (StateFieldAndDescriptor stateFieldAndDescriptor : stateFieldAndDescriptors) {
                 BytecodeExpression state = thisVariable.getField(stateFieldAndDescriptor.getStateField());
-                body.append(state.invoke("setGroupId", void.class, groupId.cast(long.class)));
+                body.append(state.invoke("setGroupId", void.class, groupId));
             }
 
             generateSerializeState(definition, stateFieldAndDescriptors, out, thisVariable, body);
@@ -899,7 +928,7 @@ public final class AccumulatorCompiler
 
         for (FieldDefinition stateField : stateFields) {
             BytecodeExpression state = thisVariable.getField(stateField);
-            body.append(state.invoke("setGroupId", void.class, groupId.cast(long.class)));
+            body.append(state.invoke("setGroupId", void.class, groupId));
             states.add(state);
         }
 
@@ -913,6 +942,7 @@ public final class AccumulatorCompiler
 
     private static void generateEvaluateFinal(
             ClassDefinition definition,
+            String methodName,
             List<FieldDefinition> stateFields,
             MethodHandle outputFunction,
             CallSiteBinder callSiteBinder)
@@ -920,7 +950,7 @@ public final class AccumulatorCompiler
         Parameter out = arg("out", BlockBuilder.class);
         MethodDefinition method = definition.declareMethod(
                 a(PUBLIC),
-                "evaluateFinal",
+                methodName,
                 type(void.class),
                 out);
 
@@ -1091,15 +1121,13 @@ public final class AccumulatorCompiler
         int lambdaParameterCount = implementation.getLambdaInterfaces().size();
         AggregationImplementation.Builder builder = AggregationImplementation.builder();
         builder.inputFunction(normalizeParameters(implementation.getInputFunction(), lambdaParameterCount));
-        implementation.getRemoveInputFunction()
-                .map(removeFunction -> normalizeParameters(removeFunction, lambdaParameterCount))
-                .ifPresent(builder::removeInputFunction);
         implementation.getCombineFunction()
                 .map(combineFunction -> normalizeParameters(combineFunction, lambdaParameterCount))
                 .ifPresent(builder::combineFunction);
         builder.outputFunction(normalizeParameters(implementation.getOutputFunction(), 0));
         builder.accumulatorStateDescriptors(implementation.getAccumulatorStateDescriptors());
         builder.lambdaInterfaces(implementation.getLambdaInterfaces());
+        implementation.getWindowAccumulator().ifPresent(builder::windowAccumulator);
         return builder.build();
     }
 

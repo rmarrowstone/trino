@@ -18,6 +18,7 @@ import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import io.trino.execution.StageId;
 import io.trino.execution.TaskId;
+import io.trino.execution.buffer.CompressionCodec;
 import io.trino.execution.buffer.OutputBufferStateMachine;
 import io.trino.execution.buffer.PagesSerdeFactory;
 import io.trino.execution.buffer.PartitionedOutputBuffer;
@@ -90,6 +91,7 @@ import static io.trino.block.BlockAssertions.createLongsBlock;
 import static io.trino.block.BlockAssertions.createRandomBlockForType;
 import static io.trino.block.BlockAssertions.createRandomLongsBlock;
 import static io.trino.block.BlockAssertions.createRepeatedValuesBlock;
+import static io.trino.execution.buffer.CompressionCodec.NONE;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.PARTITIONED;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.operator.output.BenchmarkPartitionedOutputOperator.BenchmarkData.TestType;
@@ -132,7 +134,6 @@ public class BenchmarkPartitionedOutputOperator
     }
 
     @State(Scope.Thread)
-    @SuppressWarnings("unused")
     public static class BenchmarkData
     {
         private static final int DEFAULT_POSITION_COUNT = 8192;
@@ -143,8 +144,8 @@ public class BenchmarkPartitionedOutputOperator
         @Param({"2", "16", "256"})
         private int partitionCount = 256;
 
-        @Param({"true", "false"})
-        private boolean enableCompression;
+        @Param({"LZ4", "NONE"})
+        private CompressionCodec compressionCodec = NONE;
 
         @Param({"1", "2"})
         private int channelCount = 1;
@@ -220,8 +221,6 @@ public class BenchmarkPartitionedOutputOperator
 
         @Param({"0", "0.2"})
         private float nullRate = 0.2F;
-
-        private OptionalInt nullChannel;
 
         private List<Type> types;
         private int pageCount;
@@ -343,11 +342,6 @@ public class BenchmarkPartitionedOutputOperator
                 return pageCount;
             }
 
-            public OptionalInt getNullChannel()
-            {
-                return OptionalInt.empty();
-            }
-
             public List<Type> getTypes(int channelCount)
             {
                 return nCopies(channelCount, type);
@@ -413,7 +407,6 @@ public class BenchmarkPartitionedOutputOperator
             types = type.getTypes(channelCount);
             dataPage = type.getPageGenerator().createPage(types, positionCount, nullRate);
             pageCount = type.getPageCount();
-            nullChannel = type.getNullChannel();
             types = ImmutableList.<Type>builder()
                     .addAll(types)
                     .add(BIGINT) // dataPage has pre-computed hash block at the last channel
@@ -449,7 +442,7 @@ public class BenchmarkPartitionedOutputOperator
             PartitionFunction partitionFunction = new BucketPartitionFunction(
                     new HashBucketFunction(new PrecomputedHashGenerator(0), partitionCount),
                     IntStream.range(0, partitionCount).toArray());
-            PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new TestingBlockEncodingSerde(), enableCompression);
+            PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new TestingBlockEncodingSerde(), compressionCodec);
 
             PartitionedOutputBuffer buffer = createPartitionedOutputBuffer();
 

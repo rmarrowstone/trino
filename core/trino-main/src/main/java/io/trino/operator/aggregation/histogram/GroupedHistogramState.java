@@ -37,16 +37,16 @@ public class GroupedHistogramState
             MethodHandle readFlat,
             MethodHandle writeFlat,
             MethodHandle hashFlat,
-            MethodHandle distinctFlatBlock,
+            MethodHandle identicalFlatBlock,
             MethodHandle hashBlock)
     {
-        this.histogram = new TypedHistogram(keyType, readFlat, writeFlat, hashFlat, distinctFlatBlock, hashBlock, true);
+        this.histogram = new TypedHistogram(keyType, readFlat, writeFlat, hashFlat, identicalFlatBlock, hashBlock, true);
     }
 
     @Override
-    public void ensureCapacity(long size)
+    public void ensureCapacity(int size)
     {
-        histogram.setMaxGroupId(toIntExact(size));
+        histogram.setMaxGroupId(size);
     }
 
     @Override

@@ -6,6 +6,7 @@
 admin/web-interface
 admin/tuning
 admin/jmx
+admin/opentelemetry
 admin/properties
 admin/spill
 admin/resource-groups
@@ -23,4 +24,5 @@ admin/fault-tolerant-execution
 
 admin/event-listeners-http
 admin/event-listeners-mysql
+admin/event-listeners-openlineage
 ```

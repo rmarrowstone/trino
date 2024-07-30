@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableList;
 import io.trino.annotation.UsedByGeneratedCode;
 import io.trino.json.JsonPathEvaluator;
 import io.trino.json.JsonPathInvocationContext;
-import io.trino.json.PathEvaluationError;
+import io.trino.json.PathEvaluationException;
 import io.trino.json.ir.IrJsonPath;
 import io.trino.metadata.FunctionManager;
 import io.trino.metadata.Metadata;
@@ -115,12 +115,12 @@ public class JsonExistsFunction
             long errorBehavior)
     {
         if (inputExpression.equals(JSON_ERROR)) {
-            return handleError(errorBehavior, () -> new JsonInputConversionError("malformed input argument to JSON_EXISTS function")); // ERROR ON ERROR was already handled by the input function
+            return handleError(errorBehavior, () -> new JsonInputConversionException("malformed input argument to JSON_EXISTS function")); // ERROR ON ERROR was already handled by the input function
         }
         Object[] parameters = getParametersArray(parametersRowType, parametersRow);
         for (Object parameter : parameters) {
             if (parameter.equals(JSON_ERROR)) {
-                return handleError(errorBehavior, () -> new JsonInputConversionError("malformed JSON path parameter to JSON_EXISTS function")); // ERROR ON ERROR was already handled by the input function
+                return handleError(errorBehavior, () -> new JsonInputConversionException("malformed JSON path parameter to JSON_EXISTS function")); // ERROR ON ERROR was already handled by the input function
             }
         }
         // The jsonPath argument is constant for every row. We use the first incoming jsonPath argument to initialize
@@ -135,7 +135,7 @@ public class JsonExistsFunction
         try {
             pathResult = evaluator.evaluate(inputExpression, parameters);
         }
-        catch (PathEvaluationError e) {
+        catch (PathEvaluationException e) {
             return handleError(errorBehavior, () -> e);
         }
 
@@ -144,16 +144,11 @@ public class JsonExistsFunction
 
     private static Boolean handleError(long errorBehavior, Supplier<TrinoException> error)
     {
-        switch (ErrorBehavior.values()[(int) errorBehavior]) {
-            case FALSE:
-                return false;
-            case TRUE:
-                return true;
-            case UNKNOWN:
-                return null;
-            case ERROR:
-                throw error.get();
-        }
-        throw new IllegalStateException("unexpected error behavior");
+        return switch (ErrorBehavior.values()[(int) errorBehavior]) {
+            case FALSE -> false;
+            case TRUE -> true;
+            case UNKNOWN -> null;
+            case ERROR -> throw error.get();
+        };
     }
 }

@@ -24,6 +24,8 @@ import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
 import io.trino.plugin.base.mapping.IdentifierMapping;
+import io.trino.plugin.base.projection.ProjectFunctionRewriter;
+import io.trino.plugin.base.projection.ProjectFunctionRule;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.BooleanReadFunction;
@@ -68,10 +70,10 @@ import io.trino.plugin.jdbc.aggregation.ImplementVariancePop;
 import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
-import io.trino.plugin.jdbc.expression.RewriteComparison;
 import io.trino.plugin.jdbc.expression.RewriteIn;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.plugin.postgresql.PostgreSqlConfig.ArrayMapping;
+import io.trino.plugin.postgresql.rule.RewriteStringReverseFunction;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
@@ -130,10 +132,13 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.function.BiFunction;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -275,6 +280,7 @@ public class PostgreSqlClient
     private final List<String> tableTypes;
     private final boolean statisticsEnabled;
     private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
+    private final ProjectFunctionRewriter<JdbcExpression, ParameterizedExpression> projectFunctionRewriter;
     private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
 
     @Inject
@@ -302,12 +308,19 @@ public class PostgreSqlClient
 
         this.statisticsEnabled = statisticsConfig.isEnabled();
 
+        Predicate<ConnectorSession> pushdownWithCollateEnabled = PostgreSqlSessionProperties::isEnableStringPushdownWithCollate;
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
-                // TODO allow all comparison operators for numeric types
-                .add(new RewriteComparison(ImmutableSet.of(RewriteComparison.ComparisonOperator.EQUAL, RewriteComparison.ComparisonOperator.NOT_EQUAL)))
                 .add(new RewriteIn())
                 .withTypeClass("integer_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint"))
+                .withTypeClass("numeric_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint", "decimal", "real", "double"))
+                .map("$equal(left, right)").to("left = right")
+                .map("$not_equal(left, right)").to("left <> right")
+                .map("$identical(left, right)").to("left IS NOT DISTINCT FROM right")
+                .map("$less_than(left: numeric_type, right: numeric_type)").to("left < right")
+                .map("$less_than_or_equal(left: numeric_type, right: numeric_type)").to("left <= right")
+                .map("$greater_than(left: numeric_type, right: numeric_type)").to("left > right")
+                .map("$greater_than_or_equal(left: numeric_type, right: numeric_type)").to("left >= right")
                 .map("$add(left: integer_type, right: integer_type)").to("left + right")
                 .map("$subtract(left: integer_type, right: integer_type)").to("left - right")
                 .map("$multiply(left: integer_type, right: integer_type)").to("left * right")
@@ -320,7 +333,18 @@ public class PostgreSqlClient
                 .map("$not(value: boolean)").to("NOT value")
                 .map("$is_null(value)").to("value IS NULL")
                 .map("$nullif(first, second)").to("NULLIF(first, second)")
+                .withTypeClass("collatable_type", ImmutableSet.of("char", "varchar"))
+                .when(pushdownWithCollateEnabled).map("$less_than(left: collatable_type, right: collatable_type)").to("left < right COLLATE \"C\"")
+                .when(pushdownWithCollateEnabled).map("$less_than_or_equal(left: collatable_type, right: collatable_type)").to("left <= right COLLATE \"C\"")
+                .when(pushdownWithCollateEnabled).map("$greater_than(left: collatable_type, right: collatable_type)").to("left > right COLLATE \"C\"")
+                .when(pushdownWithCollateEnabled).map("$greater_than_or_equal(left: collatable_type, right: collatable_type)").to("left >= right COLLATE \"C\"")
                 .build();
+
+        this.projectFunctionRewriter = new ProjectFunctionRewriter<>(
+                this.connectorExpressionRewriter,
+                ImmutableSet.<ProjectFunctionRule<JdbcExpression, ParameterizedExpression>>builder()
+                        .add(new RewriteStringReverseFunction())
+                        .build());
 
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         this.aggregateFunctionRewriter = new AggregateFunctionRewriter<>(
@@ -484,6 +508,18 @@ public class PostgreSqlClient
         }
     }
 
+    @Override
+    protected ResultSet getAllTableColumns(Connection connection, Optional<String> remoteSchemaName)
+            throws SQLException
+    {
+        // Delegate to default implementation which always throws, because the operation is not supported for PostgreSQL.
+        // It is here only to carry the following wisdom:
+        // TODO implement for PostgreSQL. PostgreSqlClient overrides getColumns() to support arrays. The default implementation could
+        //  be used for tables without arrays, with a fallback to slower per-table logic for case when there are arrays.
+        //  OR, we could pull columns + array dimension info in one query (not using DatabaseMetaData at all)
+        return super.getAllTableColumns(connection, remoteSchemaName);
+    }
+
     private static Map<String, Integer> getArrayColumnDimensions(Connection connection, JdbcTableHandle tableHandle)
             throws SQLException
     {
@@ -514,7 +550,7 @@ public class PostgreSqlClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
+        String jdbcTypeName = typeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
 
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
@@ -531,13 +567,19 @@ public class PostgreSqlClient
                 return Optional.of(jsonColumnMapping());
             case "timestamptz":
                 // PostgreSQL's "timestamp with time zone" is reported as Types.TIMESTAMP rather than Types.TIMESTAMP_WITH_TIMEZONE
-                int decimalDigits = typeHandle.getRequiredDecimalDigits();
+                int decimalDigits = typeHandle.requiredDecimalDigits();
                 return Optional.of(timestampWithTimeZoneColumnMapping(decimalDigits));
             case "hstore":
                 return Optional.of(hstoreColumnMapping(session));
+            case "vector":
+                return Optional.of(vectorColumnMapping());
+        }
+        if (jdbcTypeName.endsWith("\"vector\"")) {
+            // TODO: Find more reliable way to detect vector type. The type name can be "schema-name"."vector"
+            return Optional.of(vectorColumnMapping());
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BIT:
                 return Optional.of(booleanColumnMapping());
 
@@ -557,9 +599,9 @@ public class PostgreSqlClient
                 return Optional.of(doubleColumnMapping());
 
             case Types.NUMERIC: {
-                int columnSize = typeHandle.getRequiredColumnSize();
+                int columnSize = typeHandle.requiredColumnSize();
                 int precision;
-                int decimalDigits = typeHandle.getDecimalDigits().orElse(0);
+                int decimalDigits = typeHandle.decimalDigits().orElse(0);
                 if (getDecimalRounding(session) == ALLOW_OVERFLOW) {
                     if (columnSize == PRECISION_OF_UNSPECIFIED_DECIMAL) {
                         // decimal type with unspecified scale - up to 131072 digits before the decimal point; up to 16383 digits after the decimal point)
@@ -579,14 +621,14 @@ public class PostgreSqlClient
             }
 
             case Types.CHAR:
-                return Optional.of(charColumnMapping(typeHandle.getRequiredColumnSize()));
+                return Optional.of(charColumnMapping(typeHandle.requiredColumnSize()));
 
             case Types.VARCHAR:
                 if (!jdbcTypeName.equals("varchar")) {
                     // This can be e.g. an ENUM
                     return Optional.of(typedVarcharColumnMapping(jdbcTypeName));
                 }
-                return Optional.of(varcharColumnMapping(typeHandle.getRequiredColumnSize()));
+                return Optional.of(varcharColumnMapping(typeHandle.requiredColumnSize()));
 
             case Types.BINARY:
                 return Optional.of(varbinaryColumnMapping());
@@ -595,10 +637,10 @@ public class PostgreSqlClient
                 return Optional.of(dateColumnMappingUsingLocalDate());
 
             case Types.TIME:
-                return Optional.of(timeColumnMapping(typeHandle.getRequiredDecimalDigits()));
+                return Optional.of(timeColumnMapping(typeHandle.requiredDecimalDigits()));
 
             case Types.TIMESTAMP:
-                TimestampType timestampType = createTimestampType(typeHandle.getRequiredDecimalDigits());
+                TimestampType timestampType = createTimestampType(typeHandle.requiredDecimalDigits());
                 return Optional.of(ColumnMapping.longMapping(
                         timestampType,
                         timestampReadFunction(timestampType),
@@ -621,7 +663,7 @@ public class PostgreSqlClient
 
     private Optional<ColumnMapping> arrayToTrinoType(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        checkArgument(typeHandle.getJdbcType() == Types.ARRAY, "Not array type");
+        checkArgument(typeHandle.jdbcType() == Types.ARRAY, "Not array type");
 
         ArrayMapping arrayMapping = getArrayMapping(session);
         if (arrayMapping == DISABLED) {
@@ -629,9 +671,9 @@ public class PostgreSqlClient
         }
         // resolve and map base array element type
         JdbcTypeHandle baseElementTypeHandle = getArrayElementTypeHandle(connection, typeHandle);
-        String baseElementTypeName = baseElementTypeHandle.getJdbcTypeName()
+        String baseElementTypeName = baseElementTypeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Element type name is missing: " + baseElementTypeHandle));
-        if (baseElementTypeHandle.getJdbcType() == Types.BINARY) {
+        if (baseElementTypeHandle.jdbcType() == Types.BINARY) {
             // PostgreSQL jdbc driver doesn't currently support array of varbinary (bytea[])
             // https://github.com/pgjdbc/pgjdbc/pull/1184
             return Optional.empty();
@@ -639,7 +681,7 @@ public class PostgreSqlClient
         Optional<ColumnMapping> baseElementMapping = toColumnMapping(session, connection, baseElementTypeHandle);
 
         if (arrayMapping == AS_ARRAY) {
-            if (typeHandle.getArrayDimensions().isEmpty()) {
+            if (typeHandle.arrayDimensions().isEmpty()) {
                 return Optional.empty();
             }
             return baseElementMapping
@@ -647,7 +689,7 @@ public class PostgreSqlClient
                         ArrayType trinoArrayType = new ArrayType(elementMapping.getType());
                         ColumnMapping arrayColumnMapping = arrayColumnMapping(session, trinoArrayType, elementMapping, baseElementTypeName);
 
-                        int arrayDimensions = typeHandle.getArrayDimensions().get();
+                        int arrayDimensions = typeHandle.arrayDimensions().get();
                         for (int i = 1; i < arrayDimensions; i++) {
                             trinoArrayType = new ArrayType(trinoArrayType);
                             arrayColumnMapping = arrayColumnMapping(session, trinoArrayType, arrayColumnMapping, baseElementTypeName);
@@ -787,6 +829,12 @@ public class PostgreSqlClient
         return connectorExpressionRewriter.rewrite(session, expression, assignments);
     }
 
+    @Override
+    public Optional<JdbcExpression> convertProjection(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return projectFunctionRewriter.rewrite(session, expression, assignments);
+    }
+
     private static Optional<JdbcTypeHandle> toTypeHandle(DecimalType decimalType)
     {
         return Optional.of(new JdbcTypeHandle(Types.NUMERIC, Optional.of("decimal"), Optional.of(decimalType.getPrecision()), Optional.of(decimalType.getScale()), Optional.empty(), Optional.empty()));
@@ -796,9 +844,9 @@ public class PostgreSqlClient
     public boolean supportsTopN(ConnectorSession session, JdbcTableHandle handle, List<JdbcSortItem> sortOrder)
     {
         for (JdbcSortItem sortItem : sortOrder) {
-            Type sortItemType = sortItem.getColumn().getColumnType();
+            Type sortItemType = sortItem.column().getColumnType();
             if (sortItemType instanceof CharType || sortItemType instanceof VarcharType) {
-                if (!isCollatable(sortItem.getColumn())) {
+                if (!isCollatable(sortItem.column())) {
                     return false;
                 }
             }
@@ -812,13 +860,13 @@ public class PostgreSqlClient
         return Optional.of((query, sortItems, limit) -> {
             String orderBy = sortItems.stream()
                     .map(sortItem -> {
-                        String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                        String nullsHandling = sortItem.getSortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
+                        String ordering = sortItem.sortOrder().isAscending() ? "ASC" : "DESC";
+                        String nullsHandling = sortItem.sortOrder().isNullsFirst() ? "NULLS FIRST" : "NULLS LAST";
                         String collation = "";
-                        if (isCollatable(sortItem.getColumn())) {
+                        if (isCollatable(sortItem.column())) {
                             collation = "COLLATE \"C\"";
                         }
-                        return format("%s %s %s %s", quoted(sortItem.getColumn().getColumnName()), collation, ordering, nullsHandling);
+                        return format("%s %s %s %s", quoted(sortItem.column().getColumnName()), collation, ordering, nullsHandling);
                     })
                     .collect(joining(", "));
             return format("%s ORDER BY %s LIMIT %d", query, orderBy, limit);
@@ -828,7 +876,7 @@ public class PostgreSqlClient
     protected static boolean isCollatable(JdbcColumnHandle column)
     {
         if (column.getColumnType() instanceof CharType || column.getColumnType() instanceof VarcharType) {
-            String jdbcTypeName = column.getJdbcTypeHandle().getJdbcTypeName()
+            String jdbcTypeName = column.getJdbcTypeHandle().jdbcTypeName()
                     .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + column.getJdbcTypeHandle()));
             return isCollatable(jdbcTypeName);
         }
@@ -916,6 +964,12 @@ public class PostgreSqlClient
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
         }
+    }
+
+    @Override
+    public OptionalInt getMaxColumnNameLength(ConnectorSession session)
+    {
+        return getMaxColumnNameLengthFromDatabaseMetaData(session);
     }
 
     @Override
@@ -1032,6 +1086,30 @@ public class PostgreSqlClient
             ConnectorSession session,
             JoinType joinType,
             PreparedQuery leftSource,
+            Map<JdbcColumnHandle, String> leftProjections,
+            PreparedQuery rightSource,
+            Map<JdbcColumnHandle, String> rightProjections,
+            List<ParameterizedExpression> joinConditions,
+            JoinStatistics statistics)
+    {
+        if (joinType == JoinType.FULL_OUTER) {
+            // FULL JOIN is only supported with merge-joinable or hash-joinable join conditions
+            return Optional.empty();
+        }
+        return implementJoinCostAware(
+                session,
+                joinType,
+                leftSource,
+                rightSource,
+                statistics,
+                () -> super.implementJoin(session, joinType, leftSource, leftProjections, rightSource, rightProjections, joinConditions, statistics));
+    }
+
+    @Override
+    public Optional<PreparedQuery> legacyImplementJoin(
+            ConnectorSession session,
+            JoinType joinType,
+            PreparedQuery leftSource,
             PreparedQuery rightSource,
             List<JdbcJoinCondition> joinConditions,
             Map<JdbcColumnHandle, String> rightAssignments,
@@ -1048,7 +1126,7 @@ public class PostgreSqlClient
                 leftSource,
                 rightSource,
                 statistics,
-                () -> super.implementJoin(session, joinType, leftSource, rightSource, joinConditions, rightAssignments, leftAssignments, statistics));
+                () -> super.legacyImplementJoin(session, joinType, leftSource, rightSource, joinConditions, rightAssignments, leftAssignments, statistics));
     }
 
     @Override
@@ -1060,18 +1138,10 @@ public class PostgreSqlClient
         if (isVarchar) {
             // PostgreSQL is case sensitive by default, but orders varchars differently
             JoinCondition.Operator operator = joinCondition.getOperator();
-            switch (operator) {
-                case LESS_THAN:
-                case LESS_THAN_OR_EQUAL:
-                case GREATER_THAN:
-                case GREATER_THAN_OR_EQUAL:
-                    return isEnableStringPushdownWithCollate(session);
-                case EQUAL:
-                case NOT_EQUAL:
-                case IS_DISTINCT_FROM:
-                    return true;
-            }
-            return false;
+            return switch (operator) {
+                case LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL -> isEnableStringPushdownWithCollate(session);
+                case EQUAL, NOT_EQUAL, IDENTICAL -> true;
+            };
         }
 
         return true;
@@ -1193,7 +1263,7 @@ public class PostgreSqlClient
 
     private static ObjectWriteFunction longTimestampWriteFunction()
     {
-        return ObjectWriteFunction.of(LongTimestamp.class, ((statement, index, timestamp) -> {
+        return ObjectWriteFunction.of(LongTimestamp.class, (statement, index, timestamp) -> {
             // PostgreSQL supports up to 6 digits of precision
             //noinspection ConstantConditions
             verify(POSTGRESQL_MAX_SUPPORTED_TIMESTAMP_PRECISION == 6);
@@ -1203,7 +1273,7 @@ public class PostgreSqlClient
                 epochMicros++;
             }
             shortTimestampWriteFunction(statement, index, epochMicros);
-        }));
+        });
     }
 
     @Override
@@ -1295,7 +1365,7 @@ public class PostgreSqlClient
             Map<String, String> map = (Map<String, String>) resultSet.getObject(columnIndex);
             BlockBuilder keyBlockBuilder = varcharMapType.getKeyType().createBlockBuilder(null, map.size());
             BlockBuilder valueBlockBuilder = varcharMapType.getValueType().createBlockBuilder(null, map.size());
-            for (Map.Entry<String, String> entry : map.entrySet()) {
+            for (Entry<String, String> entry : map.entrySet()) {
                 if (entry.getKey() == null) {
                     throw new TrinoException(INVALID_FUNCTION_ARGUMENT, "hstore key is null");
                 }
@@ -1307,7 +1377,7 @@ public class PostgreSqlClient
                     varcharMapType.getValueType().writeSlice(valueBlockBuilder, utf8Slice(entry.getValue()));
                 }
             }
-            MapBlock mapBlock = varcharMapType.createBlockFromKeyValue(Optional.empty(), new int[]{0, map.size()}, keyBlockBuilder.build(), valueBlockBuilder.build());
+            MapBlock mapBlock = varcharMapType.createBlockFromKeyValue(Optional.empty(), new int[] {0, map.size()}, keyBlockBuilder.build(), valueBlockBuilder.build());
             return varcharMapType.getObject(mapBlock, 0);
         });
     }
@@ -1383,7 +1453,7 @@ public class PostgreSqlClient
         return ColumnMapping.sliceMapping(
                 jsonType,
                 arrayAsJsonReadFunction(session, baseElementMapping),
-                (statement, index, block) -> { throw new UnsupportedOperationException(); },
+                (statement, index, block) -> { throw new TrinoException(NOT_SUPPORTED, "Writing to array type is unsupported"); },
                 DISABLE_PUSHDOWN);
     }
 
@@ -1420,18 +1490,18 @@ public class PostgreSqlClient
 
     private static JdbcTypeHandle getArrayElementTypeHandle(Connection connection, JdbcTypeHandle arrayTypeHandle)
     {
-        String jdbcTypeName = arrayTypeHandle.getJdbcTypeName()
+        String jdbcTypeName = arrayTypeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + arrayTypeHandle));
         try {
             TypeInfo typeInfo = connection.unwrap(PgConnection.class).getTypeInfo();
             int pgElementOid = typeInfo.getPGArrayElement(typeInfo.getPGType(jdbcTypeName));
-            verify(arrayTypeHandle.getCaseSensitivity().isEmpty(), "Case sensitivity not supported");
+            verify(arrayTypeHandle.caseSensitivity().isEmpty(), "Case sensitivity not supported");
             return new JdbcTypeHandle(
                     typeInfo.getSQLType(pgElementOid),
                     Optional.of(typeInfo.getPGType(pgElementOid)),
-                    arrayTypeHandle.getColumnSize(),
-                    arrayTypeHandle.getDecimalDigits(),
-                    arrayTypeHandle.getArrayDimensions(),
+                    arrayTypeHandle.columnSize(),
+                    arrayTypeHandle.decimalDigits(),
+                    Optional.empty(),
                     Optional.empty());
         }
         catch (SQLException e) {
@@ -1459,7 +1529,9 @@ public class PostgreSqlClient
 
     private static SliceWriteFunction typedVarcharWriteFunction(String jdbcTypeName)
     {
-        String bindExpression = format("CAST(? AS %s)", requireNonNull(jdbcTypeName, "jdbcTypeName is null"));
+        requireNonNull(jdbcTypeName, "jdbcTypeName is null");
+        String quotedJdbcTypeName = jdbcTypeName.startsWith("\"") && jdbcTypeName.endsWith("\"") ? jdbcTypeName : "\"%s\"".formatted(jdbcTypeName.replace("\"", "\"\""));
+        String bindExpression = format("CAST(? AS %s)", quotedJdbcTypeName);
 
         return new SliceWriteFunction()
         {
@@ -1526,6 +1598,42 @@ public class PostgreSqlClient
                 uuidType,
                 (resultSet, columnIndex) -> javaUuidToTrinoUuid((UUID) resultSet.getObject(columnIndex)),
                 uuidWriteFunction());
+    }
+
+    private static ColumnMapping vectorColumnMapping()
+    {
+        return ColumnMapping.objectMapping(
+                new ArrayType(REAL),
+                vectorReadFunction(),
+                vectorWriteFunction(),
+                DISABLE_PUSHDOWN);
+    }
+
+    private static ObjectReadFunction vectorReadFunction()
+    {
+        return ObjectReadFunction.of(Block.class, (resultSet, columnIndex) -> {
+            // getArray is unsupported for vectors type
+            String result = resultSet.getString(columnIndex);
+            if (result == null) {
+                BlockBuilder builder = REAL.createBlockBuilder(null, 1);
+                builder.appendNull();
+                return builder.build();
+            }
+            verify(result.charAt(0) == '[' && result.charAt(result.length() - 1) == ']', "vector must be enclosed in square brackets: %s", result);
+            String[] vectors = result.substring(1, result.length() - 1).split(",");
+            BlockBuilder builder = REAL.createBlockBuilder(null, vectors.length);
+            for (String vector : vectors) {
+                REAL.writeFloat(builder, Float.parseFloat(vector));
+            }
+            return builder.build();
+        });
+    }
+
+    private static ObjectWriteFunction vectorWriteFunction()
+    {
+        return ObjectWriteFunction.of(Block.class, (_, _, _) -> {
+            throw new TrinoException(NOT_SUPPORTED, "Writing to vector type is unsupported");
+        });
     }
 
     private static class StatisticsDao

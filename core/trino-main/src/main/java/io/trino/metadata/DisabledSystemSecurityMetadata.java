@@ -18,6 +18,8 @@ import io.trino.Session;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.security.GrantInfo;
 import io.trino.spi.security.Identity;
@@ -25,8 +27,10 @@ import io.trino.spi.security.Privilege;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.security.TrinoPrincipal;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 
@@ -116,25 +120,43 @@ public class DisabledSystemSecurityMetadata
     @Override
     public void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public Set<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix)
     {
         return ImmutableSet.of();
+    }
+
+    @Override
+    public void grantEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw notSupportedException(composeNameString(entity.name()));
+    }
+
+    @Override
+    public void denyEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee)
+    {
+        throw notSupportedException(composeNameString(entity.name()));
+    }
+
+    @Override
+    public void revokeEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw notSupportedException(composeNameString(entity.name()));
     }
 
     @Override
@@ -200,8 +222,19 @@ public class DisabledSystemSecurityMetadata
     @Override
     public void columnDropped(Session session, CatalogSchemaTableName table, String column) {}
 
+    @Override
+    public void columnTypeChanged(Session session, CatalogSchemaTableName table, String column, String oldType, String newType) {}
+
+    @Override
+    public void columnNotNullConstraintDropped(Session session, CatalogSchemaTableName table, String column) {}
+
     private static TrinoException notSupportedException(String catalogName)
     {
         return new TrinoException(NOT_SUPPORTED, "Catalog does not support permission management: " + catalogName);
+    }
+
+    private String composeNameString(List<String> parts)
+    {
+        return parts.stream().collect(Collectors.joining("."));
     }
 }

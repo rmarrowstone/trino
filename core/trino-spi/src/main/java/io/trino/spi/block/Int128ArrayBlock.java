@@ -125,18 +125,6 @@ public final class Int128ArrayBlock
         return positionCount;
     }
 
-    @Override
-    public long getLong(int position, int offset)
-    {
-        if (offset == 0) {
-            return getInt128High(position);
-        }
-        if (offset == 8) {
-            return getInt128Low(position);
-        }
-        throw new IllegalArgumentException("offset must be 0 or 8");
-    }
-
     public Int128 getInt128(int position)
     {
         checkReadablePosition(this, position);
@@ -250,19 +238,28 @@ public final class Int128ArrayBlock
     @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("Int128ArrayBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "Int128ArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, positionOffset, positionCount);
+    }
+
+    int getRawOffset()
+    {
+        return positionOffset;
+    }
+
+    @Nullable
+    boolean[] getRawValueIsNull()
+    {
+        return valueIsNull;
     }
 
     long[] getRawValues()
     {
         return values;
-    }
-
-    int getPositionOffset()
-    {
-        return positionOffset;
     }
 }

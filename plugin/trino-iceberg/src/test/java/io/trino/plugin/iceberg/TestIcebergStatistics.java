@@ -26,6 +26,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.COLLECT_EXTENDED_STATISTICS_ON_WRITE;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.EXPIRE_SNAPSHOTS_MIN_RETENTION;
 import static io.trino.testing.DataProviders.cartesianProduct;
@@ -38,9 +39,6 @@ import static java.lang.String.format;
 import static java.math.RoundingMode.UP;
 import static java.util.stream.Collectors.joining;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotEquals;
 
 public class TestIcebergStatistics
         extends AbstractTestQueryFramework
@@ -150,26 +148,34 @@ public class TestIcebergStatistics
         assertUpdate("ALTER TABLE " + tableName + " DROP COLUMN comment");
 
         // schema changed, ANALYZE hasn't been re-run yet
+        double nameDataSize = (double) computeActual("SHOW STATS FOR " + tableName).getMaterializedRows().stream()
+                .filter(row -> "name".equals(row.getField(0)))
+                .collect(onlyElement()).getField(1);
+        assertThat(nameDataSize).isBetween(1000.0, 3000.0);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
                         VALUES
                           ('nationkey', null, 25, 0, null, '0', '24'),
                           ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('name', 1908.0, 25, 0, null, null, null),
+                          ('name', %s, 25, 0, null, null, null),
                           ('info', null, null, null, null, null, null),
-                          (null, null, null, null, 50, null, null)""");
+                          (null, null, null, null, 50, null, null)""".formatted(nameDataSize));
 
         assertUpdate("ANALYZE " + tableName);
+        double infoDataSize = (double) computeActual("SHOW STATS FOR " + tableName).getMaterializedRows().stream()
+                .filter(row -> "info".equals(row.getField(0)))
+                .collect(onlyElement()).getField(1);
+        assertThat(infoDataSize).isBetween(4000.0, 6000.0);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
                         VALUES
                           ('nationkey', null, 25, 0, null, '0', '24'),
                           ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('name', 1908.0, 25, 0, null, null, null),
-                          ('info', 4417.0, 25, 0.1, null, null, null),
-                          (null, null, null, null, 50, null, null)"""); // Row count statistics do not yet account for position deletes
+                          ('name', %s, 25, 0, null, null, null),
+                          ('info', %s, 25, 0.1, null, null, null),
+                          (null, null, null, null, 50, null, null)""".formatted(nameDataSize, infoDataSize)); // Row count statistics do not yet account for position deletes
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -491,7 +497,7 @@ public class TestIcebergStatistics
         assertUpdate(noStatsOnWrite, "CREATE TABLE " + tableName + " AS SELECT * FROM tpch.sf1.nation", 25);
 
         // analyze NULL list of columns
-        assertQueryFails("ANALYZE " + tableName + " WITH (columns = NULL)", "\\QInvalid null value for catalog 'iceberg' analyze property 'columns' from [null]");
+        assertQueryFails("ANALYZE " + tableName + " WITH (columns = NULL)", "\\Qline 1:41: Invalid null value for catalog 'iceberg' analyze property 'columns' from [null]");
 
         // analyze empty list of columns
         assertQueryFails("ANALYZE " + tableName + " WITH (columns = ARRAY[])", "\\QCannot specify empty list of columns for analysis");
@@ -505,7 +511,7 @@ public class TestIcebergStatistics
         // specify NULL column
         assertQueryFails(
                 "ANALYZE " + tableName + " WITH (columns = ARRAY['nationkey', NULL])",
-                "\\QUnable to set catalog 'iceberg' analyze property 'columns' to [ARRAY['nationkey',null]]: Invalid null value in analyze columns property");
+                "\\Qline 1:41: Unable to set catalog 'iceberg' analyze property 'columns' to [ARRAY['nationkey',null]]: Invalid null value in analyze columns property");
 
         // analyze nationkey and regionkey
         assertUpdate("ANALYZE " + tableName + " WITH (columns = ARRAY['nationkey', 'regionkey'])");
@@ -598,8 +604,8 @@ public class TestIcebergStatistics
         assertUpdate("CREATE TABLE " + tableName + " (a) AS VALUES 11", 1);
         long snapshotId = getCurrentSnapshotId(tableName);
         assertUpdate("INSERT INTO " + tableName + " VALUES 22", 1);
-        assertThatThrownBy(() -> query("ANALYZE \"%s@%d\"".formatted(tableName, snapshotId)))
-                .hasMessage(format("Invalid Iceberg table name: %s@%d", tableName, snapshotId));
+        assertThat(query("ANALYZE \"%s@%d\"".formatted(tableName, snapshotId)))
+                .failure().hasMessage(format("line 1:1: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
         assertThat(query("SELECT * FROM " + tableName))
                 .matches("VALUES 11, 22");
 
@@ -609,12 +615,12 @@ public class TestIcebergStatistics
     @Test
     public void testAnalyzeSystemTable()
     {
-        assertThatThrownBy(() -> query("ANALYZE \"nation$files\""))
+        assertThat(query("ANALYZE \"nation$files\""))
                 // The error message isn't clear to the user, but it doesn't matter
-                .hasMessage("Cannot record write for catalog not part of transaction");
-        assertThatThrownBy(() -> query("ANALYZE \"nation$snapshots\""))
+                .nonTrinoExceptionFailure().hasMessage("Cannot record write for catalog not part of transaction");
+        assertThat(query("ANALYZE \"nation$snapshots\""))
                 // The error message isn't clear to the user, but it doesn't matter
-                .hasMessage("Cannot record write for catalog not part of transaction");
+                .nonTrinoExceptionFailure().hasMessage("Cannot record write for catalog not part of transaction");
     }
 
     @Test
@@ -696,8 +702,8 @@ public class TestIcebergStatistics
         assertUpdate("CREATE TABLE " + tableName + " (a) AS VALUES 11", 1);
         long snapshotId = getCurrentSnapshotId(tableName);
         assertUpdate("INSERT INTO " + tableName + " VALUES 22", 1);
-        assertThatThrownBy(() -> query("ALTER TABLE \"%s@%d\" EXECUTE DROP_EXTENDED_STATS".formatted(tableName, snapshotId)))
-                .hasMessage(format("Invalid Iceberg table name: %s@%d", tableName, snapshotId));
+        assertThat(query("ALTER TABLE \"%s@%d\" EXECUTE DROP_EXTENDED_STATS".formatted(tableName, snapshotId)))
+                .failure().hasMessage(format("line 1:7: Table 'iceberg.tpch.\"%s@%s\"' does not exist", tableName, snapshotId));
         assertThat(query("SELECT * FROM " + tableName))
                 .matches("VALUES 11, 22");
 
@@ -707,10 +713,10 @@ public class TestIcebergStatistics
     @Test
     public void testDropStatsSystemTable()
     {
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$files\" EXECUTE DROP_EXTENDED_STATS"))
-                .hasMessage("This connector does not support table procedures");
-        assertThatThrownBy(() -> query("ALTER TABLE \"nation$snapshots\" EXECUTE DROP_EXTENDED_STATS"))
-                .hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$files\" EXECUTE DROP_EXTENDED_STATS"))
+                .failure().hasMessage("This connector does not support table procedures");
+        assertThat(query("ALTER TABLE \"nation$snapshots\" EXECUTE DROP_EXTENDED_STATS"))
+                .failure().hasMessage("This connector does not support table procedures");
     }
 
     @Test
@@ -723,10 +729,11 @@ public class TestIcebergStatistics
         assertUpdate("ANALYZE " + tableName);
         long analyzeSnapshot = getCurrentSnapshotId(tableName);
         // ANALYZE currently does not create a new snapshot
-        assertEquals(analyzeSnapshot, createSnapshot);
+        assertThat(analyzeSnapshot).isEqualTo(createSnapshot);
 
         assertUpdate("INSERT INTO " + tableName + " SELECT * FROM tpch.sf1.nation WHERE nationkey = 1", 1);
-        assertNotEquals(getCurrentSnapshotId(tableName), createSnapshot);
+        assertThat(getCurrentSnapshotId(tableName))
+                .isNotEqualTo(createSnapshot);
         // NDV information present after INSERT
         assertQuery(
                 "SHOW STATS FOR " + tableName,
@@ -985,12 +992,75 @@ public class TestIcebergStatistics
     }
 
     @Test
+    public void testShowStatsAfterOptimize()
+    {
+        String tableName = "show_stats_after_optimize_" + randomNameSuffix();
+
+        String catalog = getSession().getCatalog().orElseThrow();
+        Session writeSession = withStatsOnWrite(getSession(), false);
+        Session minimalSnapshotRetentionSession = Session.builder(getSession())
+                .setCatalogSessionProperty(catalog, EXPIRE_SNAPSHOTS_MIN_RETENTION, "0s")
+                .build();
+
+        String expireSnapshotQuery = "ALTER TABLE " + tableName + " EXECUTE expire_snapshots(retention_threshold => '0d')";
+
+        assertUpdate(writeSession, "CREATE TABLE " + tableName + "(key integer)");
+        // create several snapshots
+        assertUpdate(writeSession, "INSERT INTO " + tableName + " VALUES 1", 1);
+        assertUpdate(writeSession, "INSERT INTO " + tableName + " VALUES 2", 1);
+        assertUpdate(writeSession, "INSERT INTO " + tableName + " VALUES 3", 1);
+
+        assertUpdate("ANALYZE " + tableName);
+        assertUpdate(writeSession, "INSERT INTO " + tableName + " VALUES 4", 1);
+
+        assertQuery(
+                "SHOW STATS FOR " + tableName,
+                """
+                        VALUES
+                          ('key', null, 3, 0, null, '1', '4'), -- NDV present, stats "inherited" from previous snapshot
+                          (null,  null, null, null, 4, null, null)""");
+
+        assertUpdate(minimalSnapshotRetentionSession, expireSnapshotQuery);
+
+        // NDV is not present after expire_snapshot as last snapshot did not contained stats
+        assertQuery(
+                "SHOW STATS FOR " + tableName,
+                """
+                        VALUES
+                          ('key', null, null, 0, null, '1', '4'), -- NDV not present as expire_snapshot removed stats for previous snapshots
+                          (null,  null, null, null, 4, null, null)""");
+
+        assertUpdate("ANALYZE " + tableName);
+
+        assertQuery(
+                "SHOW STATS FOR " + tableName,
+                """
+                        VALUES
+                          ('key', null, 4, 0, null, '1', '4'), -- NDV present
+                          (null,  null, null, null, 4, null, null)""");
+
+        // Optimize should rewrite stats file
+        assertUpdate("ALTER TABLE " + tableName + " EXECUTE optimize");
+        assertUpdate(minimalSnapshotRetentionSession, expireSnapshotQuery);
+
+        assertQuery(
+                "SHOW STATS FOR " + tableName,
+                """
+                        VALUES
+                          ('key', null, 4, 0, null, '1', '4'), -- NDV present
+                          (null,  null, null, null, 4, null, null)""");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
     public void testStatsAfterDeletingAllRows()
     {
         String tableName = "test_stats_after_deleting_all_rows_";
         assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM tpch.sf1.nation", 25);
 
         assertThat(query("SHOW STATS FOR " + tableName))
+                .result()
                 .projected("column_name", "distinct_values_count", "row_count")
                 .skippingTypesCheck()
                 .containsAll("VALUES " +
@@ -1001,6 +1071,7 @@ public class TestIcebergStatistics
                         "(null, null, DOUBLE '25')");
         assertUpdate("DELETE FROM " + tableName + " WHERE nationkey < 50", 25);
         assertThat(query("SHOW STATS FOR " + tableName))
+                .result()
                 .projected("column_name", "distinct_values_count", "row_count")
                 .skippingTypesCheck()
                 .containsAll("VALUES " +

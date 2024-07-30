@@ -13,6 +13,8 @@
  */
 package io.trino.execution.scheduler.faulttolerant;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.units.DataSize;
@@ -21,6 +23,7 @@ import io.trino.execution.StageId;
 import io.trino.metadata.Split;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.exchange.ExchangeSourceHandle;
 import io.trino.split.RemoteSplit;
@@ -36,7 +39,6 @@ import static io.trino.spi.StandardErrorCode.EXCEEDED_TASK_DESCRIPTOR_STORAGE_CA
 import static io.trino.testing.TestingHandles.createTestCatalogHandle;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestTaskDescriptorStorage
 {
@@ -122,7 +124,7 @@ public class TestTaskDescriptorStorage
         manager.destroy(QUERY_2);
         assertThat(manager.get(QUERY_1_STAGE_1, 0)).isEmpty();
         assertThat(manager.get(QUERY_2_STAGE_1, 0)).isEmpty();
-        assertEquals(manager.getReservedBytes(), 0);
+        assertThat(manager.getReservedBytes()).isEqualTo(0);
     }
 
     @Test
@@ -173,7 +175,7 @@ public class TestTaskDescriptorStorage
         manager.put(QUERY_2_STAGE_2, createTaskDescriptor(1, DataSize.of(3, KILOBYTE), "catalog6"));
 
         // assert that the memory has been released
-        assertEquals(manager.getReservedBytes(), 0);
+        assertThat(manager.getReservedBytes()).isEqualTo(0);
 
         // check that the any future operations for QUERY_2 will fail
         assertThatThrownBy(() -> manager.put(QUERY_2_STAGE_2, createTaskDescriptor(3, DataSize.of(1, KILOBYTE))))
@@ -201,14 +203,15 @@ public class TestTaskDescriptorStorage
                 SplitsMapping.builder()
                         .addSplit(new PlanNodeId("1"), 1, new Split(REMOTE_CATALOG_HANDLE, new RemoteSplit(new SpoolingExchangeInput(ImmutableList.of(new TestingExchangeSourceHandle(retainedSize.toBytes())), Optional.empty()))))
                         .build(),
-                new NodeRequirements(catalog, ImmutableSet.of()));
+                new NodeRequirements(catalog, ImmutableSet.of(), true));
     }
 
     private static Optional<String> getCatalogName(TaskDescriptor descriptor)
     {
         return descriptor.getNodeRequirements()
                 .getCatalogHandle()
-                .map(CatalogHandle::getCatalogName);
+                .map(CatalogHandle::getCatalogName)
+                .map(CatalogName::toString);
     }
 
     private static boolean isStorageCapacityExceededFailure(Throwable t)
@@ -224,12 +227,13 @@ public class TestTaskDescriptorStorage
         return DataSize.of(size, unit).toBytes();
     }
 
-    private static class TestingExchangeSourceHandle
+    public static class TestingExchangeSourceHandle
             implements ExchangeSourceHandle
     {
         private final long retainedSizeInBytes;
 
-        private TestingExchangeSourceHandle(long retainedSizeInBytes)
+        @JsonCreator
+        public TestingExchangeSourceHandle(@JsonProperty("retainedSizeInBytes") long retainedSizeInBytes)
         {
             this.retainedSizeInBytes = retainedSizeInBytes;
         }
@@ -247,6 +251,7 @@ public class TestTaskDescriptorStorage
         }
 
         @Override
+        @JsonProperty
         public long getRetainedSizeInBytes()
         {
             return retainedSizeInBytes;

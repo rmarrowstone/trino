@@ -55,9 +55,6 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
 
 // uses mutable state
 @TestInstance(PER_METHOD)
@@ -77,10 +74,10 @@ public class TestBinPackingNodeAllocator
 
     private static final CatalogHandle CATALOG_1 = createTestCatalogHandle("catalog1");
 
-    private static final NodeRequirements REQ_NONE = new NodeRequirements(Optional.empty(), Set.of());
-    private static final NodeRequirements REQ_NODE_1 = new NodeRequirements(Optional.empty(), Set.of(NODE_1_ADDRESS));
-    private static final NodeRequirements REQ_NODE_2 = new NodeRequirements(Optional.empty(), Set.of(NODE_2_ADDRESS));
-    private static final NodeRequirements REQ_CATALOG_1 = new NodeRequirements(Optional.of(CATALOG_1), Set.of());
+    private static final NodeRequirements REQ_NONE = new NodeRequirements(Optional.empty(), Set.of(), true);
+    private static final NodeRequirements REQ_NODE_1 = new NodeRequirements(Optional.empty(), Set.of(NODE_1_ADDRESS), true);
+    private static final NodeRequirements REQ_NODE_2 = new NodeRequirements(Optional.empty(), Set.of(NODE_2_ADDRESS), true);
+    private static final NodeRequirements REQ_CATALOG_1 = new NodeRequirements(Optional.of(CATALOG_1), Set.of(), true);
 
     // none of the tests should require periodic execution of routine which processes pending acquisitions
     private static final long TEST_TIMEOUT = BinPackingNodeAllocatorService.PROCESS_PENDING_ACQUIRES_DELAY_SECONDS * 1000 / 2;
@@ -110,6 +107,7 @@ public class TestBinPackingNodeAllocator
                 () -> workerMemoryInfos,
                 false,
                 Duration.of(1, MINUTES),
+                true,
                 taskRuntimeMemoryEstimationOverhead,
                 DataSize.of(10, GIGABYTE), // allow overcommit of 10GB for EAGER_SPECULATIVE tasks
                 ticker);
@@ -178,7 +176,7 @@ public class TestBinPackingNodeAllocator
             assertEventually(() -> {
                 // we need to wait as pending acquires are processed asynchronously
                 assertAcquired(acquire5);
-                assertEquals(acquire5.getNode().get(), NODE_2);
+                assertThat(acquire5.getNode().get()).isEqualTo(NODE_2);
             });
 
             // try to acquire one more node (should block)
@@ -193,7 +191,7 @@ public class TestBinPackingNodeAllocator
             // new node should be assigned
             assertEventually(() -> {
                 assertAcquired(acquire6);
-                assertEquals(acquire6.getNode().get(), NODE_3);
+                assertThat(acquire6.getNode().get()).isEqualTo(NODE_3);
             });
         }
     }
@@ -356,8 +354,8 @@ public class TestBinPackingNodeAllocator
 
             // pending acquire2 should be completed now but with an exception
             assertEventually(() -> {
-                assertFalse(acquire2.getNode().isCancelled());
-                assertTrue(acquire2.getNode().isDone());
+                assertThat(acquire2.getNode().isCancelled()).isFalse();
+                assertThat(acquire2.getNode().isDone()).isTrue();
                 assertThatThrownBy(() -> getFutureValue(acquire2.getNode()))
                         .hasMessage("No nodes available to run query");
             });
@@ -834,6 +832,43 @@ public class TestBinPackingNodeAllocator
         }
     }
 
+    @Test
+    @Timeout(value = TEST_TIMEOUT + 3000, unit = MILLISECONDS)
+    public void testFailover()
+    {
+        InMemoryNodeManager nodeManager = new InMemoryNodeManager(NODE_1, NODE_2);
+        setupNodeAllocatorService(nodeManager);
+        NodeRequirements node2Flexible = new NodeRequirements(Optional.empty(), Set.of(NODE_2_ADDRESS), true);
+        NodeRequirements node2Rigid = new NodeRequirements(Optional.empty(), Set.of(NODE_2_ADDRESS), false);
+
+        try (NodeAllocator nodeAllocator = nodeAllocatorService.getNodeAllocator(SESSION)) {
+            final DataSize oneGig = DataSize.of(1, GIGABYTE);
+
+            // When both nodes are alive, acquire works normally and yields node 2.
+            NodeAllocator.NodeLease acquireMyNode = nodeAllocator.acquire(node2Flexible, oneGig, STANDARD);
+            assertAcquired(acquireMyNode, NODE_2);
+            acquireMyNode.release();
+
+            // When node 2 is dead, the flexible acquire should succeed on node 1, but the rigid acquire should fail.
+            nodeManager.removeNode(NODE_2);
+            NodeAllocator.NodeLease acquireAnyNode = nodeAllocator.acquire(node2Flexible, oneGig, STANDARD);
+            assertAcquired(acquireAnyNode, NODE_1);
+            acquireAnyNode.release();
+            acquireAnyNode = nodeAllocator.acquire(node2Rigid, oneGig, STANDARD);
+            nodeAllocatorService.processPendingAcquires();
+            assertNotAcquired(acquireAnyNode);
+
+            nodeManager.removeNode(NODE_1);
+            // Only the coordinator node remains, but allocator was created with scheduleOnCoordinator==false.
+            NodeAllocator.NodeLease acquireNoNodes = nodeAllocator.acquire(node2Flexible, oneGig, STANDARD);
+            nodeAllocatorService.processPendingAcquires();
+            assertNotAcquired(acquireNoNodes);
+            ticker.increment(61, TimeUnit.SECONDS);
+            assertEventually(() -> assertThatThrownBy(() -> getFutureValue(acquireNoNodes.getNode()))
+                    .hasMessage("No nodes available to run query"));
+        }
+    }
+
     private TaskId taskId(int partition)
     {
         return new TaskId(new StageId("test_query", 0), partition, 0);
@@ -852,22 +887,34 @@ public class TestBinPackingNodeAllocator
     private void assertAcquired(NodeAllocator.NodeLease lease, Optional<InternalNode> expectedNode)
     {
         assertEventually(() -> {
-            assertFalse(lease.getNode().isCancelled(), "node lease cancelled");
-            assertTrue(lease.getNode().isDone(), "node lease not acquired");
+            assertThat(lease.getNode().isCancelled())
+                    .describedAs("node lease cancelled")
+                    .isFalse();
+            assertThat(lease.getNode().isDone())
+                    .describedAs("node lease not acquired")
+                    .isTrue();
             if (expectedNode.isPresent()) {
-                assertEquals(lease.getNode().get(), expectedNode.get());
+                assertThat(lease.getNode().get()).isEqualTo(expectedNode.get());
             }
         });
     }
 
     private void assertNotAcquired(NodeAllocator.NodeLease lease)
     {
-        assertFalse(lease.getNode().isCancelled(), "node lease cancelled");
-        assertFalse(lease.getNode().isDone(), "node lease acquired");
+        assertThat(lease.getNode().isCancelled())
+                .describedAs("node lease cancelled")
+                .isFalse();
+        assertThat(lease.getNode().isDone())
+                .describedAs("node lease acquired")
+                .isFalse();
         // enforce pending acquires processing and check again
         nodeAllocatorService.processPendingAcquires();
-        assertFalse(lease.getNode().isCancelled(), "node lease cancelled");
-        assertFalse(lease.getNode().isDone(), "node lease acquired");
+        assertThat(lease.getNode().isCancelled())
+                .describedAs("node lease cancelled")
+                .isFalse();
+        assertThat(lease.getNode().isDone())
+                .describedAs("node lease acquired")
+                .isFalse();
     }
 
     private static void assertEventually(ThrowingRunnable assertion)

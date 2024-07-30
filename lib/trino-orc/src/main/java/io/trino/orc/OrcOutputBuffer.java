@@ -39,7 +39,7 @@ import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
 import static io.airlift.slice.SizeOf.SIZE_OF_SHORT;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.Slices.wrappedBuffer;
-import static java.lang.Math.max;
+import static java.lang.Math.clamp;
 import static java.lang.Math.min;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
@@ -90,19 +90,13 @@ public class OrcOutputBuffer
     @Nullable
     private static Compressor getCompressor(CompressionKind compression)
     {
-        switch (compression) {
-            case NONE:
-                return null;
-            case SNAPPY:
-                return new SnappyCompressor();
-            case ZLIB:
-                return new DeflateCompressor();
-            case LZ4:
-                return new Lz4Compressor();
-            case ZSTD:
-                return new ZstdCompressor();
-        }
-        throw new IllegalArgumentException("Unsupported compression " + compression);
+        return switch (compression) {
+            case NONE -> null;
+            case SNAPPY -> new SnappyCompressor();
+            case ZLIB -> new DeflateCompressor();
+            case LZ4 -> new Lz4Compressor();
+            case ZSTD -> new ZstdCompressor();
+        };
     }
 
     public long getOutputDataSize()
@@ -456,7 +450,7 @@ public class OrcOutputBuffer
         }
 
         // grow the buffer size
-        int newBufferSize = min(max(slice.length() * 2, minWritableBytes), maxBufferSize);
+        int newBufferSize = clamp(slice.length() * 2L, minWritableBytes, maxBufferSize);
         if (neededBufferSize <= newBufferSize) {
             // we have capacity in the new buffer; just copy the data to the new buffer
             byte[] previousBuffer = buffer;
@@ -526,7 +520,7 @@ public class OrcOutputBuffer
         }
 
         while (length > 0) {
-            int chunkSize = Integer.min(length, buffer.length);
+            int chunkSize = min(length, buffer.length);
             writeChunkToOutputStream(bytes, bytesOffset, chunkSize);
             length -= chunkSize;
             bytesOffset += chunkSize;

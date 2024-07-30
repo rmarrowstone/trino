@@ -15,7 +15,6 @@ package io.trino.spi.block;
 
 import jakarta.annotation.Nullable;
 
-import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
@@ -33,7 +32,6 @@ import static io.trino.spi.block.BlockUtil.copyOffsetsAndAppendNull;
 import static io.trino.spi.block.BlockUtil.countAndMarkSelectedPositionsFromOffsets;
 import static io.trino.spi.block.BlockUtil.countSelectedPositionsFromOffsets;
 import static java.lang.String.format;
-import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
 
 public final class ArrayBlock
@@ -177,15 +175,14 @@ public final class ArrayBlock
         return offsets;
     }
 
+    boolean[] getRawValueIsNull()
+    {
+        return valueIsNull;
+    }
+
     int getOffsetBase()
     {
         return arrayOffset;
-    }
-
-    @Override
-    public List<Block> getChildren()
-    {
-        return singletonList(values);
     }
 
     @Override
@@ -203,10 +200,7 @@ public final class ArrayBlock
     @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("ArrayBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "ArrayBlock{positionCount=" + getPositionCount() + '}';
     }
 
     @Override
@@ -363,15 +357,6 @@ public final class ArrayBlock
         return createArrayBlockInternal(0, length, newValueIsNull, newOffsets, newValues);
     }
 
-    @Override
-    public <T> T getObject(int position, Class<T> clazz)
-    {
-        if (clazz != Block.class) {
-            throw new IllegalArgumentException("clazz must be Block.class");
-        }
-        return clazz.cast(getArray(position));
-    }
-
     public Block getArray(int position)
     {
         checkReadablePosition(this, position);
@@ -429,6 +414,12 @@ public final class ArrayBlock
     public ArrayBlock getUnderlyingValueBlock()
     {
         return this;
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     public <T> T apply(ArrayBlockFunction<T> function, int position)

@@ -106,7 +106,6 @@ public final class VariableWidthBlock
         return offsets[position + arrayOffset];
     }
 
-    @Override
     public int getSliceLength(int position)
     {
         checkReadablePosition(this, position);
@@ -176,41 +175,6 @@ public final class VariableWidthBlock
             consumer.accept(valueIsNull, sizeOf(valueIsNull));
         }
         consumer.accept(this, INSTANCE_SIZE);
-    }
-
-    @Override
-    public byte getByte(int position, int offset)
-    {
-        checkReadablePosition(this, position);
-        return slice.getByte(getPositionOffset(position) + offset);
-    }
-
-    @Override
-    public short getShort(int position, int offset)
-    {
-        checkReadablePosition(this, position);
-        return slice.getShort(getPositionOffset(position) + offset);
-    }
-
-    @Override
-    public int getInt(int position, int offset)
-    {
-        checkReadablePosition(this, position);
-        return slice.getInt(getPositionOffset(position) + offset);
-    }
-
-    @Override
-    public long getLong(int position, int offset)
-    {
-        checkReadablePosition(this, position);
-        return slice.getLong(getPositionOffset(position) + offset);
-    }
-
-    @Override
-    public Slice getSlice(int position, int offset, int length)
-    {
-        checkReadablePosition(this, position);
-        return slice.slice(getPositionOffset(position) + offset, length);
     }
 
     public Slice getSlice(int position)
@@ -332,6 +296,21 @@ public final class VariableWidthBlock
         return new VariableWidthBlock(arrayOffset, positionCount + 1, slice, newOffsets, newValueIsNull);
     }
 
+    int getRawArrayBase()
+    {
+        return arrayOffset;
+    }
+
+    int[] getRawOffsets()
+    {
+        return offsets;
+    }
+
+    boolean[] getRawValueIsNull()
+    {
+        return valueIsNull;
+    }
+
     @Override
     public VariableWidthBlock getUnderlyingValueBlock()
     {
@@ -341,10 +320,12 @@ public final class VariableWidthBlock
     @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("VariableWidthBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append(", slice=").append(slice);
-        sb.append('}');
-        return sb.toString();
+        return "VariableWidthBlock{positionCount=" + getPositionCount() + ", slice=" + slice + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 }

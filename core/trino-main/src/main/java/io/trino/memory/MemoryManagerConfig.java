@@ -26,6 +26,7 @@ import static io.airlift.units.DataSize.succinctBytes;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 @DefunctConfig({
         "experimental.cluster-memory-manager-enabled",
@@ -42,53 +43,12 @@ public class MemoryManagerConfig
     private double faultTolerantExecutionTaskMemoryGrowthFactor = 3.0;
     private double faultTolerantExecutionTaskMemoryEstimationQuantile = 0.9;
     private DataSize faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead = DataSize.of(1, GIGABYTE);
-    private LowMemoryQueryKillerPolicy lowMemoryQueryKillerPolicy = LowMemoryQueryKillerPolicy.TOTAL_RESERVATION_ON_BLOCKED_NODES;
-    private LowMemoryTaskKillerPolicy lowMemoryTaskKillerPolicy = LowMemoryTaskKillerPolicy.TOTAL_RESERVATION_ON_BLOCKED_NODES;
     private boolean faultTolerantExecutionMemoryRequirementIncreaseOnWorkerCrashEnabled = true;
     private DataSize faultTolerantExecutionEagerSpeculativeTasksNodeMemoryOvercommit = DataSize.of(20, GIGABYTE);
-
-    /**
-     * default value is overwritten for fault tolerant execution in {@link #applyFaultTolerantExecutionDefaults()}}
-     */
-    private Duration killOnOutOfMemoryDelay = new Duration(5, MINUTES);
-
-    public LowMemoryQueryKillerPolicy getLowMemoryQueryKillerPolicy()
-    {
-        return lowMemoryQueryKillerPolicy;
-    }
-
-    @Config("query.low-memory-killer.policy")
-    public MemoryManagerConfig setLowMemoryQueryKillerPolicy(LowMemoryQueryKillerPolicy lowMemoryQueryKillerPolicy)
-    {
-        this.lowMemoryQueryKillerPolicy = lowMemoryQueryKillerPolicy;
-        return this;
-    }
-
-    public LowMemoryTaskKillerPolicy getLowMemoryTaskKillerPolicy()
-    {
-        return lowMemoryTaskKillerPolicy;
-    }
-
-    @Config("task.low-memory-killer.policy")
-    public MemoryManagerConfig setLowMemoryTaskKillerPolicy(LowMemoryTaskKillerPolicy lowMemoryTaskKillerPolicy)
-    {
-        this.lowMemoryTaskKillerPolicy = lowMemoryTaskKillerPolicy;
-        return this;
-    }
-
-    @NotNull
-    public Duration getKillOnOutOfMemoryDelay()
-    {
-        return killOnOutOfMemoryDelay;
-    }
-
-    @Config("query.low-memory-killer.delay")
-    @ConfigDescription("Delay between cluster running low on memory and invoking killer")
-    public MemoryManagerConfig setKillOnOutOfMemoryDelay(Duration killOnOutOfMemoryDelay)
-    {
-        this.killOnOutOfMemoryDelay = killOnOutOfMemoryDelay;
-        return this;
-    }
+    private LowMemoryQueryKillerPolicy lowMemoryQueryKillerPolicy = LowMemoryQueryKillerPolicy.TOTAL_RESERVATION_ON_BLOCKED_NODES;
+    private LowMemoryTaskKillerPolicy lowMemoryTaskKillerPolicy = LowMemoryTaskKillerPolicy.TOTAL_RESERVATION_ON_BLOCKED_NODES;
+    // default value is overwritten for fault tolerant execution in {@link #applyFaultTolerantExecutionDefaults()}}
+    private Duration killOnOutOfMemoryDelay = new Duration(30, SECONDS);
 
     @NotNull
     public DataSize getMaxQueryMemory()
@@ -147,21 +107,6 @@ public class MemoryManagerConfig
         return this;
     }
 
-    @NotNull
-    public DataSize getFaultTolerantExecutionTaskRuntimeMemoryEstimationOverhead()
-    {
-        return faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead;
-    }
-
-    @Config("fault-tolerant-execution-task-runtime-memory-estimation-overhead")
-    @ConfigDescription("Extra memory to account for when estimating actual task runtime memory consumption")
-    public MemoryManagerConfig setFaultTolerantExecutionTaskRuntimeMemoryEstimationOverhead(DataSize faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead)
-    {
-        this.faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead = faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead;
-        return this;
-    }
-
-    @NotNull
     public double getFaultTolerantExecutionTaskMemoryGrowthFactor()
     {
         return faultTolerantExecutionTaskMemoryGrowthFactor;
@@ -176,7 +121,6 @@ public class MemoryManagerConfig
         return this;
     }
 
-    @NotNull
     public double getFaultTolerantExecutionTaskMemoryEstimationQuantile()
     {
         return faultTolerantExecutionTaskMemoryEstimationQuantile;
@@ -189,6 +133,20 @@ public class MemoryManagerConfig
         checkArgument(faultTolerantExecutionTaskMemoryEstimationQuantile >= 0.0 && faultTolerantExecutionTaskMemoryEstimationQuantile <= 1.0,
                 "fault-tolerant-execution-task-memory-estimation-quantile must not be in [0.0, 1.0] range");
         this.faultTolerantExecutionTaskMemoryEstimationQuantile = faultTolerantExecutionTaskMemoryEstimationQuantile;
+        return this;
+    }
+
+    @NotNull
+    public DataSize getFaultTolerantExecutionTaskRuntimeMemoryEstimationOverhead()
+    {
+        return faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead;
+    }
+
+    @Config("fault-tolerant-execution-task-runtime-memory-estimation-overhead")
+    @ConfigDescription("Extra memory to account for when estimating actual task runtime memory consumption")
+    public MemoryManagerConfig setFaultTolerantExecutionTaskRuntimeMemoryEstimationOverhead(DataSize faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead)
+    {
+        this.faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead = faultTolerantExecutionTaskRuntimeMemoryEstimationOverhead;
         return this;
     }
 
@@ -217,6 +175,44 @@ public class MemoryManagerConfig
         return this;
     }
 
+    public LowMemoryQueryKillerPolicy getLowMemoryQueryKillerPolicy()
+    {
+        return lowMemoryQueryKillerPolicy;
+    }
+
+    @Config("query.low-memory-killer.policy")
+    public MemoryManagerConfig setLowMemoryQueryKillerPolicy(LowMemoryQueryKillerPolicy lowMemoryQueryKillerPolicy)
+    {
+        this.lowMemoryQueryKillerPolicy = lowMemoryQueryKillerPolicy;
+        return this;
+    }
+
+    public LowMemoryTaskKillerPolicy getLowMemoryTaskKillerPolicy()
+    {
+        return lowMemoryTaskKillerPolicy;
+    }
+
+    @Config("task.low-memory-killer.policy")
+    public MemoryManagerConfig setLowMemoryTaskKillerPolicy(LowMemoryTaskKillerPolicy lowMemoryTaskKillerPolicy)
+    {
+        this.lowMemoryTaskKillerPolicy = lowMemoryTaskKillerPolicy;
+        return this;
+    }
+
+    @NotNull
+    public Duration getKillOnOutOfMemoryDelay()
+    {
+        return killOnOutOfMemoryDelay;
+    }
+
+    @Config("query.low-memory-killer.delay")
+    @ConfigDescription("Delay between cluster running low on memory and invoking killer")
+    public MemoryManagerConfig setKillOnOutOfMemoryDelay(Duration killOnOutOfMemoryDelay)
+    {
+        this.killOnOutOfMemoryDelay = killOnOutOfMemoryDelay;
+        return this;
+    }
+
     public void applyFaultTolerantExecutionDefaults()
     {
         killOnOutOfMemoryDelay = new Duration(0, MINUTES);
@@ -231,16 +227,12 @@ public class MemoryManagerConfig
 
         public static LowMemoryQueryKillerPolicy fromString(String value)
         {
-            switch (value.toLowerCase(ENGLISH)) {
-                case "none":
-                    return NONE;
-                case "total-reservation":
-                    return TOTAL_RESERVATION;
-                case "total-reservation-on-blocked-nodes":
-                    return TOTAL_RESERVATION_ON_BLOCKED_NODES;
-            }
-
-            throw new IllegalArgumentException(format("Unrecognized value: '%s'", value));
+            return switch (value.toLowerCase(ENGLISH)) {
+                case "none" -> NONE;
+                case "total-reservation" -> TOTAL_RESERVATION;
+                case "total-reservation-on-blocked-nodes" -> TOTAL_RESERVATION_ON_BLOCKED_NODES;
+                default -> throw new IllegalArgumentException(format("Unrecognized value: '%s'", value));
+            };
         }
     }
 
@@ -253,16 +245,12 @@ public class MemoryManagerConfig
 
         public static LowMemoryTaskKillerPolicy fromString(String value)
         {
-            switch (value.toLowerCase(ENGLISH)) {
-                case "none":
-                    return NONE;
-                case "total-reservation-on-blocked-nodes":
-                    return TOTAL_RESERVATION_ON_BLOCKED_NODES;
-                case "least-waste":
-                    return LEAST_WASTE;
-            }
-
-            throw new IllegalArgumentException(format("Unrecognized value: '%s'", value));
+            return switch (value.toLowerCase(ENGLISH)) {
+                case "none" -> NONE;
+                case "total-reservation-on-blocked-nodes" -> TOTAL_RESERVATION_ON_BLOCKED_NODES;
+                case "least-waste" -> LEAST_WASTE;
+                default -> throw new IllegalArgumentException(format("Unrecognized value: '%s'", value));
+            };
         }
     }
 }

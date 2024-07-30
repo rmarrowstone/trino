@@ -35,8 +35,7 @@ import static io.trino.type.setdigest.SetDigest.NUMBER_OF_BUCKETS;
 import static io.trino.type.setdigest.SetDigestFunctions.hashCounts;
 import static io.trino.type.setdigest.SetDigestFunctions.intersectionCardinality;
 import static java.lang.String.format;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestSetDigest
 {
@@ -84,8 +83,9 @@ public class TestSetDigest
             }
 
             long estimatedCardinality = intersectionCardinality(digest1.serialize(), digest2.serialize());
-            assertTrue(Math.abs(expectedCardinality - estimatedCardinality) / (double) expectedCardinality < 0.10,
-                    format("Expected intersection cardinality %d +/- 10%%, got %d, for set of size %d", expectedCardinality, estimatedCardinality, size));
+            assertThat(Math.abs(expectedCardinality - estimatedCardinality) / (double) expectedCardinality < 0.10)
+                    .describedAs(format("Expected intersection cardinality %d +/- 10%%, got %d, for set of size %d", expectedCardinality, estimatedCardinality, size))
+                    .isTrue();
         }
     }
 
@@ -107,19 +107,19 @@ public class TestSetDigest
         SqlMap sqlMap = hashCounts(mapType, digest1.serialize());
         Set<Short> blockValues = new HashSet<>();
         for (int i = 0; i < sqlMap.getSize(); i++) {
-            blockValues.add(sqlMap.getRawValueBlock().getShort(sqlMap.getRawOffset() + i, 0));
+            blockValues.add(SMALLINT.getShort(sqlMap.getRawValueBlock(), sqlMap.getRawOffset() + i));
         }
         Set<Short> expected = ImmutableSet.of((short) 1, (short) 2);
-        assertEquals(blockValues, expected);
+        assertThat(blockValues).isEqualTo(expected);
 
         digest1.mergeWith(digest2);
         sqlMap = hashCounts(mapType, digest1.serialize());
         expected = ImmutableSet.of((short) 1, (short) 2, (short) 4);
         blockValues = new HashSet<>();
         for (int i = 0; i < sqlMap.getSize(); i++) {
-            blockValues.add(sqlMap.getRawValueBlock().getShort(sqlMap.getRawOffset() + i, 0));
+            blockValues.add(SMALLINT.getShort(sqlMap.getRawValueBlock(), sqlMap.getRawOffset() + i));
         }
-        assertEquals(blockValues, expected);
+        assertThat(blockValues).isEqualTo(expected);
     }
 
     @Test
@@ -163,10 +163,10 @@ public class TestSetDigest
                 long estIntersectionCardinality =
                         intersectionCardinality(digest1.serialize(), digest2.serialize());
                 double size2 = digest2.cardinality();
-                assertTrue(estIntersectionCardinality <= size2);
+                assertThat(estIntersectionCardinality <= size2).isTrue();
                 int expectedCardinality = pair.getValue();
-                assertTrue(Math.abs(expectedCardinality - estIntersectionCardinality) /
-                        (double) size1 < 0.05);
+                assertThat(Math.abs(expectedCardinality - estIntersectionCardinality) /
+                        (double) size1 < 0.05).isTrue();
             }
         }
     }

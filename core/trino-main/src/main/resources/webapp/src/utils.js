@@ -207,14 +207,14 @@ export function addExponentiallyWeightedToHistory (value: number, valuesArray: n
 // DagreD3 Graph-related functions
 // ===============================
 
-export function initializeGraph()
+export function initializeGraph() : any
 {
     return new dagreD3.graphlib.Graph({compound: true})
         .setGraph({rankdir: 'BT'})
         .setDefaultEdgeLabel(function () { return {}; });
 }
 
-export function initializeSvg(selector: any)
+export function initializeSvg(selector: any) : any
 {
     const svg = d3.select(selector);
     svg.append("g");
@@ -222,47 +222,58 @@ export function initializeSvg(selector: any)
     return svg;
 }
 
-export function getChildren(nodeInfo: any)
+export function getChildren(nodeInfo: any) : any
 {
     // TODO: Remove this function by migrating StageDetail to use node JSON representation
     switch (nodeInfo['@type']) {
-        case 'output':
-        case 'explainAnalyze':
-        case 'project':
-        case 'filter':
         case 'aggregation':
-        case 'sort':
-        case 'markDistinct':
-        case 'window':
-        case 'rowNumber':
-        case 'topnRanking':
-        case 'limit':
-        case 'distinctlimit':
-        case 'topn':
-        case 'sample':
-        case 'tablewriter':
+        case 'assignUniqueId':
+        case 'cacheData':
         case 'delete':
-        case 'tableDelete':
-        case 'tablecommit':
-        case 'groupid':
-        case 'unnest':
+        case 'distinctLimit':
+        case 'dynamicFilterSource':
+        case 'explainAnalyze':
+        case 'filter':
+        case 'groupId':
+        case 'limit':
+        case 'markDistinct':
+        case 'mergeProcessor':
+        case 'mergeWriter':
+        case 'output':
+        case 'project':
+        case 'rowNumber':
+        case 'sample':
         case 'scalar':
+        case 'simpleTableExecuteNode':
+        case 'sort':
+        case 'tableCommit':
+        case 'tableExecute':
+        case 'tableWriter':
+        case 'topN':
+        case 'topNRanking':
+        case 'unnest':
+        case 'window':
             return [nodeInfo.source];
         case 'join':
             return [nodeInfo.left, nodeInfo.right];
-        case 'semijoin':
+        case 'semiJoin':
             return [nodeInfo.source, nodeInfo.filteringSource];
-        case 'spatialjoin':
+        case 'spatialJoin':
             return [nodeInfo.left, nodeInfo.right];
-        case 'indexjoin':
+        case 'indexJoin':
             return [nodeInfo.probeSource, nodeInfo.indexSource];
-        case 'union':
         case 'exchange':
+        case 'intersect':
+        case 'union':
             return nodeInfo.sources;
+        case 'indexSource':
+        case 'loadCachedData':
+        case 'refreshMaterializedView':
         case 'remoteSource':
-        case 'tablescan':
+        case 'tableDelete':
+        case 'tableScan':
+        case 'tableUpdate':
         case 'values':
-        case 'indexsource':
             break;
         default:
             console.log("NOTE: Unhandled PlanNode: " + nodeInfo['@type']);
@@ -329,6 +340,9 @@ export function computeRate(count: number, ms: number): number {
 }
 
 export function precisionRound(n: number): string {
+    if (n === undefined){
+        return "n/a";
+    }
     if (n < 10) {
         return n.toFixed(2);
     }

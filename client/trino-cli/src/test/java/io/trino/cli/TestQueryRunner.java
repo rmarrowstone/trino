@@ -23,7 +23,6 @@ import io.trino.client.QueryResults;
 import io.trino.client.StatementStats;
 import io.trino.client.uri.PropertyName;
 import io.trino.client.uri.TrinoUri;
-import okhttp3.logging.HttpLoggingInterceptor;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import org.junit.jupiter.api.AfterEach;
@@ -33,7 +32,6 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
 import java.io.PrintStream;
-import java.sql.SQLException;
 import java.time.ZoneId;
 import java.util.Locale;
 import java.util.Optional;
@@ -50,9 +48,8 @@ import static io.trino.cli.TerminalUtils.getTerminal;
 import static io.trino.client.ClientStandardTypes.BIGINT;
 import static io.trino.client.auth.external.ExternalRedirectStrategy.PRINT;
 import static java.util.concurrent.TimeUnit.MINUTES;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNull;
 
 @TestInstance(PER_METHOD)
 public class TestQueryRunner
@@ -101,13 +98,12 @@ public class TestQueryRunner
             query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, Optional.of(""), false);
         }
 
-        assertNull(server.takeRequest().getHeader("Cookie"));
-        assertEquals(server.takeRequest().getHeader("Cookie"), "a=apple");
-        assertEquals(server.takeRequest().getHeader("Cookie"), "a=apple");
+        assertThat(server.takeRequest().getHeader("Cookie")).isNull();
+        assertThat(server.takeRequest().getHeader("Cookie")).isEqualTo("a=apple");
+        assertThat(server.takeRequest().getHeader("Cookie")).isEqualTo("a=apple");
     }
 
     static TrinoUri createTrinoUri(MockWebServer server, boolean insecureSsl)
-            throws SQLException
     {
         Properties properties = new Properties();
         properties.setProperty(PropertyName.EXTERNAL_AUTHENTICATION_REDIRECT_HANDLERS.toString(), PRINT.name());
@@ -159,8 +155,7 @@ public class TestQueryRunner
         return new QueryRunner(
                 uri,
                 clientSession,
-                false,
-                HttpLoggingInterceptor.Level.NONE);
+                false);
     }
 
     static PrintStream nullPrintStream()

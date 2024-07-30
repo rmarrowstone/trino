@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.bigquery;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.bigquery.BigQueryQueryRunner.BigQuerySqlExecutor;
@@ -30,7 +29,6 @@ import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
 
 // With case-insensitive-name-matching enabled colliding schema/table names are considered as errors.
 // Some tests here create colliding names which can cause any other concurrent test to fail.
@@ -44,10 +42,13 @@ public class TestBigQueryCaseInsensitiveMapping
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return BigQueryQueryRunner.createQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of("bigquery.case-insensitive-name-matching", "true"),
-                ImmutableList.of());
+        return BigQueryQueryRunner.builder()
+                .setConnectorProperties(ImmutableMap.<String, String>builder()
+                        .put("bigquery.case-insensitive-name-matching", "true")
+                        .put("bigquery.case-insensitive-name-matching.cache-ttl", "1m")
+                        .put("bigquery.service-cache-ttl", "0ms") // Disable service cache to focus on metadata cache
+                        .buildOrThrow())
+                .build();
     }
 
     @Test
@@ -84,11 +85,9 @@ public class TestBigQueryCaseInsensitiveMapping
                 AutoCloseable ignore2 = withTable(
                         bigQuerySchema + ".NonLowerCaseTable", "AS SELECT 'a' AS lower_case_name, 'b' AS Mixed_Case_Name, 'c' AS UPPER_CASE_NAME")) {
             assertThat(computeActual("SHOW TABLES FROM " + trinoSchema).getOnlyColumn()).contains("nonlowercasetable");
-            assertEquals(
-                    computeActual("SHOW COLUMNS FROM " + trinoSchema + ".nonlowercasetable").getMaterializedRows().stream()
-                            .map(row -> row.getField(0))
-                            .collect(toImmutableSet()),
-                    ImmutableSet.of("lower_case_name", "mixed_case_name", "upper_case_name"));
+            assertThat(computeActual("SHOW COLUMNS FROM " + trinoSchema + ".nonlowercasetable").getMaterializedRows().stream()
+                    .map(row -> row.getField(0))
+                    .collect(toImmutableSet())).isEqualTo(ImmutableSet.of("lower_case_name", "mixed_case_name", "upper_case_name"));
 
             assertQuery("SELECT table_name FROM information_schema.tables WHERE table_schema = '" + trinoSchema + "'", "VALUES 'nonlowercasetable'");
             assertQuery(
@@ -129,11 +128,9 @@ public class TestBigQueryCaseInsensitiveMapping
                 TestView view = new TestView(bigQuerySqlExecutor, namePrefix, "SELECT 'a' AS lower_case_name, 'b' AS Mixed_Case_Name, 'c' AS UPPER_CASE_NAME")) {
             String viewName = view.getName().substring(bigQuerySchema.length() + 1).toLowerCase(ENGLISH);
             assertThat(computeActual("SHOW TABLES FROM " + trinoSchema).getOnlyColumn()).contains(viewName);
-            assertEquals(
-                    computeActual("SHOW COLUMNS FROM " + trinoSchema + "." + viewName).getMaterializedRows().stream()
-                            .map(row -> row.getField(0))
-                            .collect(toImmutableSet()),
-                    ImmutableSet.of("lower_case_name", "mixed_case_name", "upper_case_name"));
+            assertThat(computeActual("SHOW COLUMNS FROM " + trinoSchema + "." + viewName).getMaterializedRows().stream()
+                    .map(row -> row.getField(0))
+                    .collect(toImmutableSet())).isEqualTo(ImmutableSet.of("lower_case_name", "mixed_case_name", "upper_case_name"));
 
             assertQuery(
                     format("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s'", trinoSchema),

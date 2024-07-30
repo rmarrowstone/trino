@@ -36,8 +36,6 @@ import static io.trino.tests.product.utils.QueryExecutors.onDelta;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotEquals;
 
 public class TestDeltaLakeSelectCompatibility
         extends BaseTestDeltaLakeS3Storage
@@ -61,13 +59,15 @@ public class TestDeltaLakeSelectCompatibility
                     "(2, 'spark+plus'), " +
                     "(3, 'spark space')," +
                     "(4, 'spark:colon')," +
-                    "(5, 'spark%percent')");
+                    "(5, 'spark%percent')," +
+                    "(6, 'spark/forwardslash')");
             onTrino().executeQuery("INSERT INTO delta.default." + tableName + " VALUES " +
                     "(10, 'trino=equal'), " +
                     "(20, 'trino+plus'), " +
                     "(30, 'trino space')," +
                     "(40, 'trino:colon')," +
-                    "(50, 'trino%percent')");
+                    "(50, 'trino%percent')," +
+                    "(60, 'trino/forwardslash')");
 
             List<Row> expectedRows = ImmutableList.of(
                     row(1, "spark=equal"),
@@ -75,11 +75,13 @@ public class TestDeltaLakeSelectCompatibility
                     row(3, "spark space"),
                     row(4, "spark:colon"),
                     row(5, "spark%percent"),
+                    row(6, "spark/forwardslash"),
                     row(10, "trino=equal"),
                     row(20, "trino+plus"),
                     row(30, "trino space"),
                     row(40, "trino:colon"),
-                    row(50, "trino%percent"));
+                    row(50, "trino%percent"),
+                    row(60, "trino/forwardslash"));
 
             assertThat(onDelta().executeQuery("SELECT * FROM default." + tableName))
                     .containsOnly(expectedRows);
@@ -89,8 +91,8 @@ public class TestDeltaLakeSelectCompatibility
             String deltaFilePath = (String) onDelta().executeQuery("SELECT input_file_name() FROM default." + tableName + " WHERE a_number = 1").getOnlyValue();
             String trinoFilePath = (String) onTrino().executeQuery("SELECT \"$path\" FROM delta.default." + tableName + " WHERE a_number = 1").getOnlyValue();
             // File paths returned by the input_file_name function are URI encoded https://github.com/delta-io/delta/issues/1517 while the $path of Trino is not
-            assertNotEquals(deltaFilePath, trinoFilePath);
-            assertEquals(format("s3://%s%s", bucketName, URI.create(deltaFilePath).getPath()), trinoFilePath);
+            assertThat(deltaFilePath).isNotEqualTo(trinoFilePath);
+            assertThat(format("s3://%s%s", bucketName, URI.create(deltaFilePath).getPath())).isEqualTo(trinoFilePath);
 
             assertThat(onTrino().executeQuery("SELECT * FROM delta.default." + tableName + " WHERE \"$path\" = '" + trinoFilePath + "'"))
                     .containsOnly(row(1, "spark=equal"));

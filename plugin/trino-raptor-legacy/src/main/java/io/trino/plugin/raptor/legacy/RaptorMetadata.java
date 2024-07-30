@@ -49,6 +49,7 @@ import io.trino.spi.connector.ConnectorTableLayout;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTablePartitioning;
 import io.trino.spi.connector.ConnectorTableProperties;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
@@ -82,6 +83,7 @@ import java.util.function.LongConsumer;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.MoreCollectors.toOptional;
 import static io.airlift.json.JsonCodec.jsonCodec;
@@ -167,8 +169,12 @@ public class RaptorMetadata
     }
 
     @Override
-    public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
+    public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
+        if (startVersion.isPresent() || endVersion.isPresent()) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support versioned tables");
+        }
+
         return getTableHandle(tableName);
     }
 
@@ -327,6 +333,7 @@ public class RaptorMetadata
                         newDomain.intersect(table.getConstraint()),
                         table.getBucketAssignments()),
                 constraint.getSummary(),
+                constraint.getExpression(),
                 false));
     }
 
@@ -378,7 +385,7 @@ public class RaptorMetadata
         List<String> bucketAssignments = shardManager.getBucketAssignments(distributionId);
         ConnectorPartitioningHandle partitioning = new RaptorPartitioningHandle(distributionId, bucketAssignments);
 
-        return Optional.of(new ConnectorTableLayout(partitioning, partitionColumns));
+        return Optional.of(new ConnectorTableLayout(partitioning, partitionColumns, false));
     }
 
     private Optional<DistributionInfo> getOrCreateDistribution(Map<String, RaptorColumnHandle> columnHandleMap, Map<String, Object> properties)
@@ -482,7 +489,7 @@ public class RaptorMetadata
 
         // Always add new columns to the end.
         List<TableColumn> existingColumns = dao.listTableColumns(table.getSchemaName(), table.getTableName());
-        TableColumn lastColumn = existingColumns.get(existingColumns.size() - 1);
+        TableColumn lastColumn = existingColumns.getLast();
         long columnId = lastColumn.getColumnId() + 1;
         int ordinalPosition = lastColumn.getOrdinalPosition() + 1;
 
@@ -716,6 +723,20 @@ public class RaptorMetadata
     }
 
     @Override
+    public Optional<ConnectorTableLayout> getInsertLayout(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        RaptorTableHandle table = (RaptorTableHandle) tableHandle;
+        if (table.getPartitioningHandle().isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(new ConnectorTableLayout(
+                table.getPartitioningHandle().get(),
+                getBucketColumnHandles(table.getTableId()).stream()
+                        .map(RaptorColumnHandle::getColumnName)
+                        .collect(toImmutableList())));
+    }
+
+    @Override
     public RaptorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle, List<ColumnHandle> columns, RetryMode retryMode)
     {
         if (retryMode != NO_RETRIES) {
@@ -774,7 +795,12 @@ public class RaptorMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public Optional<ConnectorOutputMetadata> finishInsert(
+            ConnectorSession session,
+            ConnectorInsertTableHandle insertHandle,
+            List<ConnectorTableHandle> sourceTableHandles,
+            Collection<Slice> fragments,
+            Collection<ComputedStatistics> computedStatistics)
     {
         RaptorInsertTableHandle handle = (RaptorInsertTableHandle) insertHandle;
         long transactionId = handle.getTransactionId();
@@ -852,7 +878,7 @@ public class RaptorMetadata
     }
 
     @Override
-    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, List<ConnectorTableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         RaptorMergeTableHandle handle = (RaptorMergeTableHandle) mergeTableHandle;
         long transactionId = handle.getInsertTableHandle().getTransactionId();

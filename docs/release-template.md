@@ -1,4 +1,4 @@
-# Release xyz (dd MMM 2023)
+# Release xyz (dd MMM 2024)
 
 ## General
 
@@ -32,6 +32,8 @@
 
 ## Elasticsearch connector
 
+## Exasol connector
+
 ## Google Sheets connector
 
 ## Hive connector
@@ -60,6 +62,8 @@
 
 ## MySQL connector
 
+## OpenSearch connector
+
 ## Oracle connector
 
 ## Phoenix connector
@@ -77,6 +81,8 @@
 ## Redshift connector
 
 ## SingleStore connector
+
+## Snowflake connector
 
 ## SQL Server connector
 

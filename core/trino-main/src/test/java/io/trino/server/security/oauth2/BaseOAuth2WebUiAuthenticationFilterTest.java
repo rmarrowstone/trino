@@ -26,7 +26,7 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.impl.DefaultClaims;
 import io.trino.server.security.jwt.JwkService;
-import io.trino.server.security.jwt.JwkSigningKeyResolver;
+import io.trino.server.security.jwt.JwkSigningKeyLocator;
 import io.trino.server.testing.TestingTrinoServer;
 import io.trino.server.ui.OAuth2WebUiAuthenticationFilter;
 import io.trino.server.ui.WebUiModule;
@@ -41,6 +41,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.io.IOException;
 import java.net.CookieManager;
@@ -72,9 +73,10 @@ import static jakarta.ws.rs.core.Response.Status.SEE_OTHER;
 import static jakarta.ws.rs.core.Response.Status.UNAUTHORIZED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public abstract class BaseOAuth2WebUiAuthenticationFilterTest
 {
     protected static final Duration TTL_ACCESS_TOKEN_IN_SECONDS = Duration.ofSeconds(5);
@@ -117,7 +119,6 @@ public abstract class BaseOAuth2WebUiAuthenticationFilterTest
                 .setProperties(getOAuth2Config(idpUrl))
                 .build();
         server.getInstance(Key.get(OAuth2Client.class)).load();
-        server.waitForNodeRefresh(Duration.ofSeconds(10));
         serverUri = server.getHttpsBaseUrl();
         uiUri = serverUri.resolve("/ui/");
 
@@ -199,10 +200,13 @@ public abstract class BaseOAuth2WebUiAuthenticationFilterTest
         keyGenerator.initialize(4096);
         long now = Instant.now().getEpochSecond();
         String token = newJwtBuilder()
-                .setHeaderParam("alg", "RS256")
-                .setHeaderParam("kid", "public:f467aa08-1c1b-4cde-ba45-84b0ef5d2ba8")
-                .setHeaderParam("typ", "JWT")
-                .setClaims(
+                .header().add(ImmutableMap.<String, Object>builder()
+                        .put("alg", "RS256")
+                        .put("kid", "public:f467aa08-1c1b-4cde-ba45-84b0ef5d2ba8")
+                        .put("typ", "JWT")
+                        .buildOrThrow())
+                .and()
+                .claims(
                         new DefaultClaims(
                                 ImmutableMap.<String, Object>builder()
                                         .put("aud", ImmutableList.of())
@@ -270,13 +274,13 @@ public abstract class BaseOAuth2WebUiAuthenticationFilterTest
 
         // access UI and follow redirects in order to get OAuth2 cookie
         try (Response response = httpClient.newCall(
-                new Request.Builder()
-                        .url(uiUri.toURL())
-                        .get()
-                        .build())
+                        new Request.Builder()
+                                .url(uiUri.toURL())
+                                .get()
+                                .build())
                 .execute()) {
-            assertEquals(response.code(), SC_OK);
-            assertEquals(response.request().url().toString(), uiUri.toString());
+            assertThat(response.code()).isEqualTo(SC_OK);
+            assertThat(response.request().url().toString()).isEqualTo(uiUri.toString());
         }
         Optional<HttpCookie> oauth2Cookie = cookieStore.get(uiUri)
                 .stream()
@@ -299,8 +303,8 @@ public abstract class BaseOAuth2WebUiAuthenticationFilterTest
                                 .get()
                                 .build())
                 .execute()) {
-            assertEquals(response.code(), SC_OK);
-            assertEquals(response.request().url().toString(), uiUri.resolve("logout/logout.html").toString());
+            assertThat(response.code()).isEqualTo(SC_OK);
+            assertThat(response.request().url().toString()).isEqualTo(uiUri.resolve("logout/logout.html").toString());
         }
         assertThat(cookieStore.get(uiUri)).isEmpty();
     }
@@ -347,7 +351,7 @@ public abstract class BaseOAuth2WebUiAuthenticationFilterTest
         assertThat(idToken).isNotBlank();
 
         Jws<Claims> jwt = parseJwsClaims(idToken);
-        Claims claims = jwt.getBody();
+        Claims claims = jwt.getPayload();
         assertThat(claims.getSubject()).isEqualTo("foo@bar.com");
         assertThat(claims.getAudience()).isEqualTo(ImmutableSet.of(TRINO_CLIENT_ID));
         assertThat(claims.getIssuer()).isEqualTo("https://localhost:4444/");
@@ -366,13 +370,16 @@ public abstract class BaseOAuth2WebUiAuthenticationFilterTest
 
     protected Jws<Claims> parseJwsClaims(String claimsJws)
     {
-        return newJwtParserBuilder()
-                .setSigningKeyResolver(new JwkSigningKeyResolver(new JwkService(
-                        URI.create("https://localhost:" + hydraIdP.getAuthPort() + "/.well-known/jwks.json"),
-                        new JettyHttpClient(new HttpClientConfig()
-                                .setTrustStorePath(Resources.getResource("cert/localhost.pem").getPath())))))
-                .build()
-                .parseClaimsJws(claimsJws);
+        HttpClientConfig httpClientConfig = new HttpClientConfig()
+                .setTrustStorePath(Resources.getResource("cert/localhost.pem").getPath());
+        try (JettyHttpClient httpClient = new JettyHttpClient(httpClientConfig)) {
+            return newJwtParserBuilder()
+                    .keyLocator(new JwkSigningKeyLocator(new JwkService(
+                            URI.create("https://localhost:" + hydraIdP.getAuthPort() + "/.well-known/jwks.json"),
+                            httpClient)))
+                    .build()
+                    .parseSignedClaims(claimsJws);
+        }
     }
 
     private void assertUICallWithCookie(String cookieValue)

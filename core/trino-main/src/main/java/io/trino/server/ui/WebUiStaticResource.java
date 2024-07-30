@@ -13,8 +13,10 @@
  */
 package io.trino.server.ui;
 
+import io.trino.server.ExternalUriInfo;
 import io.trino.server.security.ResourceSecurity;
 import jakarta.servlet.ServletContext;
+import jakarta.ws.rs.BeanParam;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
@@ -36,17 +38,17 @@ public class WebUiStaticResource
 {
     @ResourceSecurity(PUBLIC)
     @GET
-    public Response getRoot()
+    public Response getRoot(@BeanParam ExternalUriInfo externalUriInfo)
     {
-        return Response.seeOther(URI.create("/ui/")).build();
+        return Response.seeOther(externalUriInfo.absolutePath("/ui/")).build();
     }
 
     @ResourceSecurity(PUBLIC)
     @GET
     @Path("/ui")
-    public Response getUi()
+    public Response getUi(@BeanParam ExternalUriInfo externalUriInfo)
     {
-        return Response.seeOther(URI.create("/ui/")).build();
+        return Response.seeOther(externalUriInfo.absolutePath("/ui/")).build();
     }
 
     @ResourceSecurity(WEB_UI)
@@ -104,7 +106,7 @@ public class WebUiStaticResource
         return Response.ok(resource.openStream(), servletContext.getMimeType(resource.toString())).build();
     }
 
-    private static boolean isCanonical(String fullPath)
+    public static boolean isCanonical(String fullPath)
     {
         try {
             return new URI(fullPath).normalize().getPath().equals(fullPath);

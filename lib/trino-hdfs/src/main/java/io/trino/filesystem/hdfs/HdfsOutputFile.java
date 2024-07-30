@@ -21,9 +21,8 @@ import io.trino.hdfs.CallStats;
 import io.trino.hdfs.HdfsContext;
 import io.trino.hdfs.HdfsEnvironment;
 import io.trino.hdfs.MemoryAwareFileSystem;
-import io.trino.hdfs.authentication.GenericExceptionAction;
-import io.trino.hdfs.gcs.GcsExclusiveOutputStream;
-import io.trino.hdfs.s3.TrinoS3FileSystem;
+import io.trino.hdfs.authentication.HdfsAuthentication.ExceptionAction;
+import io.trino.hdfs.gcs.GcsAtomicOutputStream;
 import io.trino.memory.context.AggregatedMemoryContext;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -36,6 +35,7 @@ import java.nio.file.FileAlreadyExistsException;
 import static io.trino.filesystem.hdfs.HadoopPaths.hadoopPath;
 import static io.trino.filesystem.hdfs.HdfsFileSystem.withCause;
 import static io.trino.hdfs.FileSystemUtils.getRawFileSystem;
+import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static java.util.Objects.requireNonNull;
 
 class HdfsOutputFile
@@ -63,25 +63,27 @@ class HdfsOutputFile
     }
 
     @Override
-    public OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
+    public void createOrOverwrite(byte[] data)
             throws IOException
     {
-        return create(true, memoryContext);
+        try (OutputStream out = create(true, newSimpleAggregatedMemoryContext())) {
+            out.write(data);
+        }
     }
 
     @Override
-    public OutputStream createExclusive(AggregatedMemoryContext memoryContext)
+    public void createExclusive(byte[] data)
             throws IOException
     {
         Path file = hadoopPath(location);
         FileSystem fileSystem = getRawFileSystem(environment.getFileSystem(context, file));
-        if (fileSystem instanceof TrinoS3FileSystem) {
-            throw new IOException("S3 does not support exclusive create");
-        }
         if (fileSystem instanceof GoogleHadoopFileSystem) {
-            return new GcsExclusiveOutputStream(environment, context, file);
+            GcsAtomicOutputStream atomicOutputStream = new GcsAtomicOutputStream(environment, context, file);
+            atomicOutputStream.write(data);
+            atomicOutputStream.close();
+            return;
         }
-        return create(memoryContext);
+        throw new UnsupportedOperationException("createExclusive not supported for " + fileSystem);
     }
 
     private OutputStream create(boolean overwrite, AggregatedMemoryContext memoryContext)
@@ -91,7 +93,7 @@ class HdfsOutputFile
         Path file = hadoopPath(location);
         FileSystem fileSystem = environment.getFileSystem(context, file);
         FileSystem rawFileSystem = getRawFileSystem(fileSystem);
-        try (TimeStat.BlockTimer ignored = createFileCallStat.time()) {
+        try (TimeStat.BlockTimer _ = createFileCallStat.time()) {
             if (rawFileSystem instanceof MemoryAwareFileSystem memoryAwareFileSystem) {
                 return create(() -> memoryAwareFileSystem.create(file, memoryContext));
             }
@@ -107,7 +109,7 @@ class HdfsOutputFile
         }
     }
 
-    private OutputStream create(GenericExceptionAction<FSDataOutputStream, IOException> action)
+    private OutputStream create(ExceptionAction<FSDataOutputStream> action)
             throws IOException
     {
         FSDataOutputStream out = environment.doAs(context.getIdentity(), action);

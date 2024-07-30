@@ -28,8 +28,10 @@ import io.airlift.stats.TimeStat;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.trino.Session;
 import io.trino.exchange.DirectExchangeInput;
+import io.trino.execution.BasicStageInfo;
 import io.trino.execution.BasicStageStats;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.NodeTaskMap;
@@ -71,6 +73,7 @@ import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.RemoteSourceNode;
 import io.trino.sql.planner.plan.TableScanNode;
+import io.trino.tracing.TrinoAttributes;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -178,6 +181,7 @@ public class PipelinedQueryScheduler
     private final Duration retryInitialDelay;
     private final Duration retryMaxDelay;
     private final double retryDelayScaleFactor;
+    private final Span schedulerSpan;
 
     @GuardedBy("this")
     private boolean started;
@@ -220,6 +224,10 @@ public class PipelinedQueryScheduler
         this.dynamicFilterService = requireNonNull(dynamicFilterService, "dynamicFilterService is null");
         this.tableExecuteContextManager = requireNonNull(tableExecuteContextManager, "tableExecuteContextManager is null");
         this.splitSourceFactory = requireNonNull(splitSourceFactory, "splitSourceFactory is null");
+        this.schedulerSpan = tracer.spanBuilder("scheduler")
+                .setParent(Context.current().with(queryStateMachine.getSession().getQuerySpan()))
+                .setAttribute(TrinoAttributes.QUERY_ID, queryStateMachine.getQueryId().toString())
+                .startSpan();
 
         stageManager = StageManager.create(
                 queryStateMachine,
@@ -227,6 +235,7 @@ public class PipelinedQueryScheduler
                 remoteTaskFactory,
                 nodeTaskMap,
                 tracer,
+                schedulerSpan,
                 schedulerStats,
                 plan,
                 summarizeTaskInfo);
@@ -286,6 +295,7 @@ public class PipelinedQueryScheduler
                 }
                 stageManager.abort();
             }
+            schedulerSpan.end();
 
             queryStateMachine.updateQueryInfo(Optional.ofNullable(getStageInfo()));
         });
@@ -302,14 +312,12 @@ public class PipelinedQueryScheduler
         if (queryStateMachine.isDone()) {
             return Optional.empty();
         }
-        DistributedStagesScheduler distributedStagesScheduler;
-        switch (retryPolicy) {
-            case QUERY:
-            case NONE:
+        DistributedStagesScheduler distributedStagesScheduler = switch (retryPolicy) {
+            case QUERY, NONE -> {
                 if (attempt > 0) {
                     dynamicFilterService.registerQueryRetry(queryStateMachine.getQueryId(), attempt);
                 }
-                distributedStagesScheduler = DistributedStagesScheduler.create(
+                yield DistributedStagesScheduler.create(
                         queryStateMachine,
                         schedulerStats,
                         nodeScheduler,
@@ -325,10 +333,9 @@ public class PipelinedQueryScheduler
                         tableExecuteContextManager,
                         retryPolicy,
                         attempt);
-                break;
-            default:
-                throw new IllegalArgumentException("Unexpected retry policy: " + retryPolicy);
-        }
+            }
+            default -> throw new IllegalArgumentException("Unexpected retry policy: " + retryPolicy);
+        };
 
         this.distributedStagesScheduler.set(distributedStagesScheduler);
         distributedStagesScheduler.addStateChangeListener(state -> {
@@ -419,7 +426,7 @@ public class PipelinedQueryScheduler
     @Override
     public synchronized void cancelStage(StageId stageId)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
             coordinatorStagesScheduler.cancelStage(stageId);
             DistributedStagesScheduler distributedStagesScheduler = this.distributedStagesScheduler.get();
             if (distributedStagesScheduler != null) {
@@ -431,7 +438,7 @@ public class PipelinedQueryScheduler
     @Override
     public void failTask(TaskId taskId, Throwable failureCause)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
             stageManager.failTaskRemotely(taskId, failureCause);
         }
     }
@@ -446,6 +453,12 @@ public class PipelinedQueryScheduler
     public StageInfo getStageInfo()
     {
         return stageManager.getStageInfo();
+    }
+
+    @Override
+    public BasicStageInfo getBasicStageInfo()
+    {
+        return stageManager.getBasicStageInfo();
     }
 
     @Override
@@ -585,7 +598,7 @@ public class PipelinedQueryScheduler
         private static PipelinedOutputBufferManager createSingleStreamOutputBuffer(SqlStage stage)
         {
             PartitioningHandle partitioningHandle = stage.getFragment().getOutputPartitioningScheme().getPartitioning().getHandle();
-            checkArgument(partitioningHandle.isSingleNode(), "partitioning is expected to be single node: " + partitioningHandle);
+            checkArgument(partitioningHandle.isSingleNode(), "partitioning is expected to be single node: %s", partitioningHandle);
             return new PartitionedPipelinedOutputBufferManager(partitioningHandle, 1);
         }
 
@@ -1253,7 +1266,7 @@ public class PipelinedQueryScheduler
         {
             checkState(started.compareAndSet(false, true), "already started");
 
-            try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+            try (SetThreadName _ = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
                 stageSchedulers.values().forEach(StageScheduler::start);
                 while (!executionSchedule.isFinished()) {
                     List<ListenableFuture<Void>> blockedStages = new ArrayList<>();
@@ -1474,7 +1487,7 @@ public class PipelinedQueryScheduler
             failureCause.compareAndSet(null, new StageFailureInfo(toFailure(throwable), failedStageId));
             boolean failed = state.setIf(DistributedStagesSchedulerState.FAILED, currentState -> !currentState.isDone());
             if (failed) {
-                log.error(throwable, "Failure in distributed stage for query %s", queryId);
+                log.debug(throwable, "Failure in distributed stage for query %s", queryId);
             }
             else {
                 log.debug(throwable, "Failure in distributed stage for query %s after finished", queryId);

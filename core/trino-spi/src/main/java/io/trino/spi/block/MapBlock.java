@@ -18,7 +18,6 @@ import io.trino.spi.type.MapType;
 import jakarta.annotation.Nullable;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
@@ -267,10 +266,7 @@ public final class MapBlock
     @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("MapBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "MapBlock{positionCount=" + getPositionCount() + '}';
     }
 
     @Override
@@ -322,12 +318,6 @@ public final class MapBlock
                 keyBlock,
                 valueBlock,
                 hashTables);
-    }
-
-    @Override
-    public List<Block> getChildren()
-    {
-        return List.of(keyBlock, valueBlock);
     }
 
     MapType getMapType()
@@ -535,15 +525,6 @@ public final class MapBlock
                 new MapHashTables(mapType, DUPLICATE_NOT_CHECKED, length, Optional.ofNullable(newRawHashTables)));
     }
 
-    @Override
-    public <T> T getObject(int position, Class<T> clazz)
-    {
-        if (clazz != SqlMap.class) {
-            throw new IllegalArgumentException("clazz must be SqlMap.class");
-        }
-        return clazz.cast(getMap(position));
-    }
-
     public SqlMap getMap(int position)
     {
         checkReadablePosition(this, position);
@@ -619,6 +600,12 @@ public final class MapBlock
     public MapBlock getUnderlyingValueBlock()
     {
         return this;
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(mapIsNull, startOffset, positionCount);
     }
 
     // only visible for testing

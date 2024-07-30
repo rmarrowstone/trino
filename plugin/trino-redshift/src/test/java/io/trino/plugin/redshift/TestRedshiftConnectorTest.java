@@ -14,17 +14,13 @@
 package io.trino.plugin.redshift;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.jdbc.BaseJdbcConnectorTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import io.trino.tpch.TpchTable;
-import org.testng.SkipException;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -34,19 +30,18 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.SystemSessionProperties.DISTINCT_AGGREGATIONS_STRATEGY;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.TEST_SCHEMA;
-import static io.trino.plugin.redshift.RedshiftQueryRunner.createRedshiftQueryRunner;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.executeInRedshift;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.executeWithRedshift;
-import static io.trino.testing.DataProviders.cartesianProduct;
-import static io.trino.testing.DataProviders.trueFalse;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestRedshiftConnectorTest
         extends BaseJdbcConnectorTest
@@ -55,12 +50,11 @@ public class TestRedshiftConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createRedshiftQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of(),
+        return RedshiftQueryRunner.builder()
                 // NOTE this can cause tests to time-out if larger tables like
                 //  lineitem and orders need to be re-created.
-                TpchTable.getTables());
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
@@ -68,21 +62,22 @@ public class TestRedshiftConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_JOIN_PUSHDOWN,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY -> true;
+                 SUPPORTS_JOIN_PUSHDOWN,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY -> true;
             case SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_ADD_COLUMN_WITH_COMMENT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
-                    SUPPORTS_ARRAY,
-                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
-                    SUPPORTS_DROP_SCHEMA_CASCADE,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
-                    SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
-                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE -> false;
+                 SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_DROP_SCHEMA_CASCADE,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                 SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                 SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -149,6 +144,7 @@ public class TestRedshiftConnectorTest
     /**
      * Overridden due to Redshift not supporting non-ASCII characters in CHAR.
      */
+    @Test
     @Override
     public void testCreateTableAsSelectWithUnicode()
     {
@@ -160,8 +156,26 @@ public class TestRedshiftConnectorTest
                 "SELECT 1");
     }
 
-    @Test(dataProvider = "redshiftTypeToTrinoTypes")
-    public void testReadFromLateBindingView(String redshiftType, String trinoType)
+    @Test
+    public void testReadFromLateBindingView()
+    {
+        testReadFromLateBindingView("SMALLINT", "smallint");
+        testReadFromLateBindingView("INTEGER", "integer");
+        testReadFromLateBindingView("BIGINT", "bigint");
+        testReadFromLateBindingView("DECIMAL", "decimal(18,0)");
+        testReadFromLateBindingView("REAL", "real");
+        testReadFromLateBindingView("DOUBLE PRECISION", "double");
+        testReadFromLateBindingView("BOOLEAN", "boolean");
+        testReadFromLateBindingView("CHAR(1)", "char(1)");
+        testReadFromLateBindingView("VARCHAR(1)", "varchar(1)");
+        // consider to extract "CHARACTER VARYING" type from here as it requires exact length, 0 - is for the empty string
+        testReadFromLateBindingView("CHARACTER VARYING", "varchar(0)");
+        testReadFromLateBindingView("TIME", "time(6)");
+        testReadFromLateBindingView("TIMESTAMP", "timestamp(6)");
+        testReadFromLateBindingView("TIMESTAMPTZ", "timestamp(6) with time zone");
+    }
+
+    private void testReadFromLateBindingView(String redshiftType, String trinoType)
     {
         try (TestView view = new TestView(onRemoteDatabase(), TEST_SCHEMA + ".late_schema_binding", "SELECT CAST(NULL AS %s) AS value WITH NO SCHEMA BINDING".formatted(redshiftType))) {
             assertThat(query("SELECT true FROM %s WHERE value IS NULL".formatted(view.getName())))
@@ -173,8 +187,39 @@ public class TestRedshiftConnectorTest
         }
     }
 
-    @Test(dataProvider = "testReadNullFromViewDataProvider")
-    public void testReadNullFromView(String redshiftType, String trinoType, boolean lateBindingView)
+    @Test
+    public void testReadNullFromView()
+    {
+        testReadNullFromView("SMALLINT", "smallint", true);
+        testReadNullFromView("SMALLINT", "smallint", false);
+        testReadNullFromView("INTEGER", "integer", true);
+        testReadNullFromView("INTEGER", "integer", false);
+        testReadNullFromView("BIGINT", "bigint", true);
+        testReadNullFromView("BIGINT", "bigint", false);
+        testReadNullFromView("DECIMAL", "decimal(18,0)", true);
+        testReadNullFromView("DECIMAL", "decimal(18,0)", false);
+        testReadNullFromView("REAL", "real", true);
+        testReadNullFromView("REAL", "real", false);
+        testReadNullFromView("DOUBLE PRECISION", "double", true);
+        testReadNullFromView("DOUBLE PRECISION", "double", false);
+        testReadNullFromView("BOOLEAN", "boolean", true);
+        testReadNullFromView("BOOLEAN", "boolean", false);
+        testReadNullFromView("CHAR(1)", "char(1)", true);
+        testReadNullFromView("CHAR(1)", "char(1)", false);
+        testReadNullFromView("VARCHAR(1)", "varchar(1)", true);
+        testReadNullFromView("VARCHAR(1)", "varchar(1)", false);
+        // consider to extract "CHARACTER VARYING" type from here as it requires exact length, 0 - is for the empty string
+        testReadNullFromView("CHARACTER VARYING", "varchar(0)", true);
+        testReadNullFromView("CHARACTER VARYING", "varchar(0)", false);
+        testReadNullFromView("TIME", "time(6)", true);
+        testReadNullFromView("TIME", "time(6)", false);
+        testReadNullFromView("TIMESTAMP", "timestamp(6)", true);
+        testReadNullFromView("TIMESTAMP", "timestamp(6)", false);
+        testReadNullFromView("TIMESTAMPTZ", "timestamp(6) with time zone", true);
+        testReadNullFromView("TIMESTAMPTZ", "timestamp(6) with time zone", false);
+    }
+
+    private void testReadNullFromView(String redshiftType, String trinoType, boolean lateBindingView)
     {
         try (TestView view = new TestView(
                 onRemoteDatabase(),
@@ -190,32 +235,6 @@ public class TestRedshiftConnectorTest
         }
     }
 
-    @DataProvider
-    public Object[][] testReadNullFromViewDataProvider()
-    {
-        return cartesianProduct(redshiftTypeToTrinoTypes(), trueFalse());
-    }
-
-    @DataProvider
-    public Object[][] redshiftTypeToTrinoTypes()
-    {
-        return new Object[][] {
-                {"SMALLINT", "smallint"},
-                {"INTEGER", "integer"},
-                {"BIGINT", "bigint"},
-                {"DECIMAL", "decimal(18,0)"},
-                {"REAL", "real"},
-                {"DOUBLE PRECISION", "double"},
-                {"BOOLEAN", "boolean"},
-                {"CHAR(1)", "char(1)"},
-                {"VARCHAR(1)", "varchar(1)"},
-                // consider to extract "CHARACTER VARYING" type from here as it requires exact length, 0 - is for the empty string
-                {"CHARACTER VARYING", "varchar(0)"},
-                {"TIME", "time(6)"},
-                {"TIMESTAMP", "timestamp(6)"},
-                {"TIMESTAMPTZ", "timestamp(6) with time zone"}};
-    }
-
     @Test
     public void testRedshiftAddNotNullColumn()
     {
@@ -225,6 +244,7 @@ public class TestRedshiftConnectorTest
         }
     }
 
+    @Test
     @Override
     public void testDelete()
     {
@@ -252,8 +272,18 @@ public class TestRedshiftConnectorTest
         }
     }
 
-    @Test(dataProvider = "testCaseColumnNamesDataProvider")
-    public void testCaseColumnNames(String tableName)
+    @Test
+    public void testCaseColumnNames()
+    {
+        testCaseColumnNames("TEST_STATS_MIXED_UNQUOTED_UPPER_" + randomNameSuffix());
+        testCaseColumnNames("test_stats_mixed_unquoted_lower_" + randomNameSuffix());
+        testCaseColumnNames("test_stats_mixed_uNQuoTeD_miXED_" + randomNameSuffix());
+        testCaseColumnNames("\"TEST_STATS_MIXED_QUOTED_UPPER_" + randomNameSuffix() + "\"");
+        testCaseColumnNames("\"test_stats_mixed_quoted_lower_" + randomNameSuffix() + "\"");
+        testCaseColumnNames("\"test_stats_mixed_QuoTeD_miXED_" + randomNameSuffix() + "\"");
+    }
+
+    private void testCaseColumnNames(String tableName)
     {
         try {
             assertUpdate(
@@ -339,19 +369,7 @@ public class TestRedshiftConnectorTest
         });
     }
 
-    @DataProvider
-    public Object[][] testCaseColumnNamesDataProvider()
-    {
-        return new Object[][] {
-                {"TEST_STATS_MIXED_UNQUOTED_UPPER_" + randomNameSuffix()},
-                {"test_stats_mixed_unquoted_lower_" + randomNameSuffix()},
-                {"test_stats_mixed_uNQuoTeD_miXED_" + randomNameSuffix()},
-                {"\"TEST_STATS_MIXED_QUOTED_UPPER_" + randomNameSuffix() + "\""},
-                {"\"test_stats_mixed_quoted_lower_" + randomNameSuffix() + "\""},
-                {"\"test_stats_mixed_QuoTeD_miXED_" + randomNameSuffix() + "\""}
-        };
-    }
-
+    @Test
     @Override
     public void testCountDistinctWithStringTypes()
     {
@@ -374,20 +392,43 @@ public class TestRedshiftConnectorTest
                     .matches("VALUES BIGINT '6'")
                     .isFullyPushedDown();
 
-            assertThat(query("SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
+            Session withMarkDistinct = Session.builder(getSession())
+                    .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "mark_distinct")
+                    .build();
+
+            Session withSingleStepDistinct = Session.builder(getSession())
+                    .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "single_step")
+                    .build();
+
+            Session withPreAggregate = Session.builder(getSession())
+                    .setSystemProperty(DISTINCT_AGGREGATIONS_STRATEGY, "pre_aggregate")
+                    .build();
+
+            assertThat(query(withMarkDistinct, "SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
+                    .matches("VALUES (BIGINT '6', BIGINT '6')")
+                    .isFullyPushedDown();
+
+            assertThat(query(withSingleStepDistinct, "SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
+                    .matches("VALUES (BIGINT '6', BIGINT '6')")
+                    .isFullyPushedDown();
+
+            assertThat(query(withPreAggregate, "SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName()))
                     .matches("VALUES (BIGINT '6', BIGINT '6')")
                     .isFullyPushedDown();
         }
     }
 
+    @Test
     @Override
     public void testAggregationPushdown()
     {
-        throw new SkipException("tested in testAggregationPushdown(String)");
+        testAggregationPushdown("EVEN");
+        testAggregationPushdown("KEY");
+        testAggregationPushdown("ALL");
+        testAggregationPushdown("AUTO");
     }
 
-    @Test(dataProvider = "testAggregationPushdownDistStylesDataProvider")
-    public void testAggregationPushdown(String distStyle)
+    private void testAggregationPushdown(String distStyle)
     {
         String nation = format("%s.nation_%s_%s", TEST_SCHEMA, distStyle, randomNameSuffix());
         String customer = format("%s.customer_%s_%s", TEST_SCHEMA, distStyle, randomNameSuffix());
@@ -461,14 +502,17 @@ public class TestRedshiftConnectorTest
         }
     }
 
+    @Test
     @Override
     public void testNumericAggregationPushdown()
     {
-        throw new SkipException("tested in testNumericAggregationPushdown(String)");
+        testNumericAggregationPushdown("EVEN");
+        testNumericAggregationPushdown("KEY");
+        testNumericAggregationPushdown("ALL");
+        testNumericAggregationPushdown("AUTO");
     }
 
-    @Test(dataProvider = "testAggregationPushdownDistStylesDataProvider")
-    public void testNumericAggregationPushdown(String distStyle)
+    private void testNumericAggregationPushdown(String distStyle)
     {
         String schemaName = getSession().getSchema().orElseThrow();
         // empty table
@@ -525,8 +569,8 @@ public class TestRedshiftConnectorTest
                         .mapTo(Long.class)
                         .findOne();
 
-                // 10 means AUTO(ALL) and 11 means AUTO(EVEN). See https://docs.aws.amazon.com/redshift/latest/dg/r_PG_CLASS_INFO.html.
-                return currentDistStyle.isPresent() && (currentDistStyle.get() == 10 || currentDistStyle.get() == 11);
+                // 10 means AUTO(ALL), 11 means AUTO(EVEN) and 12 means AUTO(KEY). See https://docs.aws.amazon.com/redshift/latest/dg/r_PG_CLASS_INFO.html.
+                return currentDistStyle.isPresent() && (currentDistStyle.get() == 10 || currentDistStyle.get() == 11 || currentDistStyle.get() == 12);
             });
             if (!isDistStyleAuto) {
                 executeInRedshift("ALTER TABLE " + destTableName + " ALTER DISTSTYLE " + distStyle);
@@ -540,17 +584,6 @@ public class TestRedshiftConnectorTest
             copyWithDistStyleSql += " AS SELECT * FROM " + sourceTableName;
             executeInRedshift(copyWithDistStyleSql);
         }
-    }
-
-    @DataProvider
-    public Object[][] testAggregationPushdownDistStylesDataProvider()
-    {
-        return new Object[][] {
-                {"EVEN"},
-                {"KEY"},
-                {"ALL"},
-                {"AUTO"},
-        };
     }
 
     @Test
@@ -587,17 +620,11 @@ public class TestRedshiftConnectorTest
         }
     }
 
-    @Override
     @Test
-    public void testReadMetadataWithRelationsConcurrentModifications()
-    {
-        throw new SkipException("Test fails with a timeout sometimes and is flaky");
-    }
-
     @Override
     public void testInsertRowConcurrently()
     {
-        throw new SkipException("Test fails with a timeout sometimes and is flaky");
+        abort("Test fails with a timeout sometimes and is flaky");
     }
 
     @Override
@@ -657,6 +684,7 @@ public class TestRedshiftConnectorTest
         return RedshiftQueryRunner::executeInRedshift;
     }
 
+    @Test
     @Override
     public void testDeleteWithLike()
     {

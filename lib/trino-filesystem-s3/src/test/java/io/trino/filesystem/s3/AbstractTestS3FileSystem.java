@@ -15,6 +15,7 @@ package io.trino.filesystem.s3;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.ByteStreams;
+import com.google.common.io.Closer;
 import io.airlift.log.Logging;
 import io.trino.filesystem.AbstractTestTrinoFileSystem;
 import io.trino.filesystem.FileEntry;
@@ -31,12 +32,13 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 
+import java.io.Closeable;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.util.List;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class AbstractTestS3FileSystem
@@ -63,53 +65,6 @@ public abstract class AbstractTestS3FileSystem
         fileSystemFactory = null;
     }
 
-    /**
-     * Tests same things as {@link #testFileWithTrailingWhitespace()} but with setup and assertions using {@link S3Client}.
-     */
-    @Test
-    public void testFileWithTrailingWhitespaceAgainstNativeClient()
-            throws IOException
-    {
-        try (S3Client s3Client = createS3Client()) {
-            String key = "foo/bar with whitespace ";
-            byte[] contents = "abc foo bar".getBytes(UTF_8);
-            s3Client.putObject(
-                    request -> request.bucket(bucket()).key(key),
-                    RequestBody.fromBytes(contents.clone()));
-            try {
-                // Verify listing
-                List<FileEntry> listing = toList(fileSystem.listFiles(getRootLocation().appendPath("foo")));
-                assertThat(listing).hasSize(1);
-                FileEntry fileEntry = getOnlyElement(listing);
-                assertThat(fileEntry.location()).isEqualTo(getRootLocation().appendPath(key));
-                assertThat(fileEntry.length()).isEqualTo(contents.length);
-
-                // Verify reading
-                TrinoInputFile inputFile = fileSystem.newInputFile(fileEntry.location());
-                assertThat(inputFile.exists()).as("exists").isTrue();
-                try (TrinoInputStream inputStream = inputFile.newStream()) {
-                    byte[] bytes = ByteStreams.toByteArray(inputStream);
-                    assertThat(bytes).isEqualTo(contents);
-                }
-
-                // Verify writing
-                byte[] newContents = "bar bar baz new content".getBytes(UTF_8);
-                try (OutputStream outputStream = fileSystem.newOutputFile(fileEntry.location()).createOrOverwrite()) {
-                    outputStream.write(newContents.clone());
-                }
-                assertThat(s3Client.getObjectAsBytes(request -> request.bucket(bucket()).key(key)).asByteArray())
-                        .isEqualTo(newContents);
-
-                // Verify deleting
-                fileSystem.deleteFile(fileEntry.location());
-                assertThat(inputFile.exists()).as("exists after delete").isFalse();
-            }
-            finally {
-                s3Client.deleteObject(delete -> delete.bucket(bucket()).key(key));
-            }
-        }
-    }
-
     @Override
     protected final boolean isHierarchical()
     {
@@ -129,19 +84,13 @@ public abstract class AbstractTestS3FileSystem
     }
 
     @Override
-    protected final boolean supportsCreateExclusive()
+    protected boolean isCreateExclusive()
     {
         return false;
     }
 
     @Override
     protected final boolean supportsRenameFile()
-    {
-        return false;
-    }
-
-    @Override
-    protected final boolean deleteFileFailsIfNotExists()
     {
         return false;
     }
@@ -173,5 +122,129 @@ public abstract class AbstractTestS3FileSystem
             list.add(fileIterator.next());
         }
         return list.build();
+    }
+
+    /**
+     * Tests same things as {@link #testFileWithTrailingWhitespace()} but with setup and assertions using {@link S3Client}.
+     */
+    @Test
+    void testFileWithTrailingWhitespaceAgainstNativeClient()
+            throws IOException
+    {
+        try (S3Client s3Client = createS3Client()) {
+            String key = "foo/bar with whitespace ";
+            byte[] contents = "abc foo bar".getBytes(UTF_8);
+            s3Client.putObject(
+                    request -> request.bucket(bucket()).key(key),
+                    RequestBody.fromBytes(contents.clone()));
+            try {
+                // Verify listing
+                List<FileEntry> listing = toList(fileSystem.listFiles(getRootLocation().appendPath("foo")));
+                assertThat(listing).hasSize(1);
+                FileEntry fileEntry = getOnlyElement(listing);
+                assertThat(fileEntry.location()).isEqualTo(getRootLocation().appendPath(key));
+                assertThat(fileEntry.length()).isEqualTo(contents.length);
+
+                // Verify reading
+                TrinoInputFile inputFile = fileSystem.newInputFile(fileEntry.location());
+                assertThat(inputFile.exists()).as("exists").isTrue();
+                try (TrinoInputStream inputStream = inputFile.newStream()) {
+                    byte[] bytes = ByteStreams.toByteArray(inputStream);
+                    assertThat(bytes).isEqualTo(contents);
+                }
+
+                // Verify writing
+                byte[] newContents = "bar bar baz new content".getBytes(UTF_8);
+                fileSystem.newOutputFile(fileEntry.location()).createOrOverwrite(newContents);
+                assertThat(s3Client.getObjectAsBytes(request -> request.bucket(bucket()).key(key)).asByteArray())
+                        .isEqualTo(newContents);
+
+                // Verify deleting
+                fileSystem.deleteFile(fileEntry.location());
+                assertThat(inputFile.exists()).as("exists after delete").isFalse();
+            }
+            finally {
+                s3Client.deleteObject(delete -> delete.bucket(bucket()).key(key));
+            }
+        }
+    }
+
+    @Test
+    void testExistingDirectoryWithTrailingSlash()
+            throws IOException
+    {
+        try (S3Client s3Client = createS3Client(); Closer closer = Closer.create()) {
+            String key = "data/dir/";
+            createDirectory(closer, s3Client, key);
+            assertThat(fileSystem.listFiles(getRootLocation()).hasNext()).isFalse();
+
+            Location data = getRootLocation().appendPath("data/");
+            assertThat(fileSystem.listDirectories(getRootLocation())).containsExactly(data);
+            assertThat(fileSystem.listDirectories(data)).containsExactly(data.appendPath("dir/"));
+
+            fileSystem.deleteDirectory(data);
+            assertThat(fileSystem.listDirectories(getRootLocation())).isEmpty();
+
+            fileSystem.deleteDirectory(getRootLocation());
+            assertThat(fileSystem.listDirectories(getRootLocation())).isEmpty();
+        }
+    }
+
+    @Test
+    void testDeleteEmptyDirectoryWithDeepHierarchy()
+            throws IOException
+    {
+        try (S3Client s3Client = createS3Client(); Closer closer = Closer.create()) {
+            createDirectory(closer, s3Client, "deep/dir");
+            createBlob(closer, "deep/dir/file1.txt");
+            createBlob(closer, "deep/dir/file2.txt");
+            createBlob(closer, "deep/dir/file3.txt");
+            createDirectory(closer, s3Client, "deep/dir/dir4");
+            createBlob(closer, "deep/dir/dir4/file5.txt");
+
+            assertThat(fileSystem.listFiles(getRootLocation()).hasNext()).isTrue();
+
+            Location directory = getRootLocation().appendPath("deep/dir/");
+            assertThat(fileSystem.listDirectories(getRootLocation().appendPath("deep"))).containsExactly(directory);
+            assertThat(fileSystem.listDirectories(directory)).containsExactly(getRootLocation().appendPath("deep/dir/dir4/"));
+
+            fileSystem.deleteDirectory(directory);
+            assertThat(fileSystem.listDirectories(getRootLocation().appendPath("deep"))).isEmpty();
+            assertThat(fileSystem.listDirectories(getRootLocation())).isEmpty();
+            assertThat(fileSystem.listFiles(getRootLocation()).hasNext()).isFalse();
+        }
+    }
+
+    protected Location createDirectory(Closer closer, S3Client s3Client, String path)
+    {
+        Location location = createLocation(path);
+        closer.register(new TempDirectory(s3Client, path)).create();
+        return location;
+    }
+
+    protected class TempDirectory
+            implements Closeable
+    {
+        private final S3Client s3Client;
+        private final String path;
+
+        public TempDirectory(S3Client s3Client, String path)
+        {
+            this.s3Client = requireNonNull(s3Client, "s3Client is null");
+            String key = requireNonNull(path, "path is null");
+            this.path = key.endsWith("/") ? key : key + "/";
+        }
+
+        public void create()
+        {
+            s3Client.putObject(request -> request.bucket(bucket()).key(path), RequestBody.empty());
+        }
+
+        @Override
+        public void close()
+                throws IOException
+        {
+            s3Client.deleteObject(delete -> delete.bucket(bucket()).key(path));
+        }
     }
 }

@@ -73,6 +73,22 @@ public final class ByteArrayBlock
         retainedSizeInBytes = (INSTANCE_SIZE + sizeOf(valueIsNull) + sizeOf(values));
     }
 
+    /**
+     * Gets the raw byte array that keeps the actual data values.
+     */
+    public byte[] getRawValues()
+    {
+        return values;
+    }
+
+    /**
+     * Gets the offset into raw byte array where the data values start.
+     */
+    public int getRawValuesOffset()
+    {
+        return arrayOffset;
+    }
+
     @Override
     public long getSizeInBytes()
     {
@@ -123,15 +139,6 @@ public final class ByteArrayBlock
     public int getPositionCount()
     {
         return positionCount;
-    }
-
-    @Override
-    public byte getByte(int position, int offset)
-    {
-        if (offset != 0) {
-            throw new IllegalArgumentException("offset must be zero");
-        }
-        return getByte(position);
     }
 
     public byte getByte(int position)
@@ -232,14 +239,22 @@ public final class ByteArrayBlock
     @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("ByteArrayBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "ByteArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     Slice getValuesSlice()
     {
         return Slices.wrappedBuffer(values, arrayOffset, positionCount);
+    }
+
+    boolean[] getRawValueIsNull()
+    {
+        return valueIsNull;
     }
 }

@@ -30,6 +30,7 @@ import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableExecuteHandle;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableLayout;
+import io.trino.spi.RefreshType;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.RowChangeParadigm;
@@ -389,7 +390,7 @@ public class TableWriterNode
         @Override
         public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
         {
-            return metadata.getMaxWriterTasks(session, handle.getCatalogHandle().getCatalogName());
+            return metadata.getMaxWriterTasks(session, handle.catalogHandle().getCatalogName().toString());
         }
 
         @Override
@@ -407,6 +408,7 @@ public class TableWriterNode
         private final boolean multipleWritersPerPartitionSupported;
         private final OptionalInt maxWriterTasks;
         private final WriterScalingOptions writerScalingOptions;
+        private final List<TableHandle> sourceTableHandles;
 
         @JsonCreator
         public InsertTarget(
@@ -414,13 +416,15 @@ public class TableWriterNode
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
                 @JsonProperty("multipleWritersPerPartitionSupported") boolean multipleWritersPerPartitionSupported,
                 @JsonProperty("maxWriterTasks") OptionalInt maxWriterTasks,
-                @JsonProperty("writerScalingOptions") WriterScalingOptions writerScalingOptions)
+                @JsonProperty("writerScalingOptions") WriterScalingOptions writerScalingOptions,
+                @JsonProperty("sourceTableHandles") List<TableHandle> sourceTableHandles)
         {
             this.handle = requireNonNull(handle, "handle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
             this.multipleWritersPerPartitionSupported = multipleWritersPerPartitionSupported;
             this.maxWriterTasks = requireNonNull(maxWriterTasks, "maxWriterTasks is null");
             this.writerScalingOptions = requireNonNull(writerScalingOptions, "writerScalingOptions is null");
+            this.sourceTableHandles = ImmutableList.copyOf(sourceTableHandles);
         }
 
         @JsonProperty
@@ -470,6 +474,12 @@ public class TableWriterNode
         {
             return writerScalingOptions;
         }
+
+        @JsonProperty
+        public List<TableHandle> getSourceTableHandles()
+        {
+            return sourceTableHandles;
+        }
     }
 
     public static class RefreshMaterializedViewReference
@@ -478,12 +488,21 @@ public class TableWriterNode
         private final String table;
         private final TableHandle storageTableHandle;
         private final List<TableHandle> sourceTableHandles;
+        private final List<String> sourceTableFunctions;
+        private final RefreshType refreshType;
 
-        public RefreshMaterializedViewReference(String table, TableHandle storageTableHandle, List<TableHandle> sourceTableHandles)
+        public RefreshMaterializedViewReference(
+                String table,
+                TableHandle storageTableHandle,
+                List<TableHandle> sourceTableHandles,
+                List<String> sourceTableFunctions,
+                RefreshType refreshType)
         {
             this.table = requireNonNull(table, "table is null");
             this.storageTableHandle = requireNonNull(storageTableHandle, "storageTableHandle is null");
             this.sourceTableHandles = ImmutableList.copyOf(sourceTableHandles);
+            this.sourceTableFunctions = ImmutableList.copyOf(sourceTableFunctions);
+            this.refreshType = requireNonNull(refreshType, "refreshType is null");
         }
 
         public TableHandle getStorageTableHandle()
@@ -513,13 +532,28 @@ public class TableWriterNode
         @Override
         public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
         {
-            return metadata.getMaxWriterTasks(session, storageTableHandle.getCatalogHandle().getCatalogName());
+            return metadata.getMaxWriterTasks(session, storageTableHandle.catalogHandle().getCatalogName().toString());
+        }
+
+        public List<String> getSourceTableFunctions()
+        {
+            return sourceTableFunctions;
         }
 
         @Override
         public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
         {
             return metadata.getInsertWriterScalingOptions(session, storageTableHandle);
+        }
+
+        public RefreshType getRefreshType()
+        {
+            return refreshType;
+        }
+
+        public RefreshMaterializedViewReference withRefreshType(RefreshType refreshType)
+        {
+            return new RefreshMaterializedViewReference(table, storageTableHandle, sourceTableHandles, sourceTableFunctions, refreshType);
         }
     }
 
@@ -530,6 +564,7 @@ public class TableWriterNode
         private final InsertTableHandle insertHandle;
         private final SchemaTableName schemaTableName;
         private final List<TableHandle> sourceTableHandles;
+        private final List<String> sourceTableFunctions;
         private final WriterScalingOptions writerScalingOptions;
 
         @JsonCreator
@@ -538,12 +573,14 @@ public class TableWriterNode
                 @JsonProperty("insertHandle") InsertTableHandle insertHandle,
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
                 @JsonProperty("sourceTableHandles") List<TableHandle> sourceTableHandles,
+                @JsonProperty("sourceTableFunctions") List<String> sourceTableFunctions,
                 @JsonProperty("writerScalingOptions") WriterScalingOptions writerScalingOptions)
         {
             this.tableHandle = requireNonNull(tableHandle, "tableHandle is null");
             this.insertHandle = requireNonNull(insertHandle, "insertHandle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
             this.sourceTableHandles = ImmutableList.copyOf(sourceTableHandles);
+            this.sourceTableFunctions = ImmutableList.copyOf(sourceTableFunctions);
             this.writerScalingOptions = requireNonNull(writerScalingOptions, "writerScalingOptions is null");
         }
 
@@ -572,6 +609,12 @@ public class TableWriterNode
         }
 
         @JsonProperty
+        public List<String> getSourceTableFunctions()
+        {
+            return sourceTableFunctions;
+        }
+
+        @JsonProperty
         public WriterScalingOptions getWriterScalingOptions()
         {
             return writerScalingOptions;
@@ -594,7 +637,7 @@ public class TableWriterNode
         @Override
         public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
         {
-            return metadata.getMaxWriterTasks(session, tableHandle.getCatalogHandle().getCatalogName());
+            return metadata.getMaxWriterTasks(session, tableHandle.catalogHandle().getCatalogName().toString());
         }
 
         @Override
@@ -806,7 +849,7 @@ public class TableWriterNode
         @Override
         public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
         {
-            return metadata.getMaxWriterTasks(session, executeHandle.getCatalogHandle().getCatalogName());
+            return metadata.getMaxWriterTasks(session, executeHandle.catalogHandle().getCatalogName().toString());
         }
 
         @Override
@@ -823,18 +866,21 @@ public class TableWriterNode
         private final Optional<MergeHandle> mergeHandle;
         private final SchemaTableName schemaTableName;
         private final MergeParadigmAndTypes mergeParadigmAndTypes;
+        private final List<TableHandle> sourceTableHandles;
 
         @JsonCreator
         public MergeTarget(
                 @JsonProperty("handle") TableHandle handle,
                 @JsonProperty("mergeHandle") Optional<MergeHandle> mergeHandle,
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-                @JsonProperty("mergeParadigmAndTypes") MergeParadigmAndTypes mergeParadigmAndTypes)
+                @JsonProperty("mergeParadigmAndTypes") MergeParadigmAndTypes mergeParadigmAndTypes,
+                @JsonProperty("sourceTableHandles") List<TableHandle> sourceTableHandles)
         {
             this.handle = requireNonNull(handle, "handle is null");
             this.mergeHandle = requireNonNull(mergeHandle, "mergeHandle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
             this.mergeParadigmAndTypes = requireNonNull(mergeParadigmAndTypes, "mergeElements is null");
+            this.sourceTableHandles = ImmutableList.copyOf(requireNonNull(sourceTableHandles, "sourceTableHandles is null"));
         }
 
         @JsonProperty
@@ -883,6 +929,12 @@ public class TableWriterNode
         public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
         {
             return WriterScalingOptions.DISABLED;
+        }
+
+        @JsonProperty
+        public List<TableHandle> getSourceTableHandles()
+        {
+            return sourceTableHandles;
         }
     }
 

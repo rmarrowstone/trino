@@ -19,9 +19,9 @@ import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.Dataset;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
-import com.google.cloud.bigquery.InsertAllRequest;
-import com.google.cloud.bigquery.InsertAllResponse;
 import com.google.cloud.bigquery.Job;
+import com.google.cloud.bigquery.JobConfiguration;
+import com.google.cloud.bigquery.JobException;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatistics;
 import com.google.cloud.bigquery.JobStatistics.QueryStatistics;
@@ -33,14 +33,18 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.http.BaseHttpServiceException;
+import com.google.common.cache.Cache;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.cache.EvictableCacheBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 
@@ -52,6 +56,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.google.cloud.bigquery.JobStatistics.QueryStatistics.StatementType.SELECT;
 import static com.google.cloud.bigquery.TableDefinition.Type.EXTERNAL;
@@ -59,6 +65,7 @@ import static com.google.cloud.bigquery.TableDefinition.Type.MATERIALIZED_VIEW;
 import static com.google.cloud.bigquery.TableDefinition.Type.SNAPSHOT;
 import static com.google.cloud.bigquery.TableDefinition.Type.TABLE;
 import static com.google.cloud.bigquery.TableDefinition.Type.VIEW;
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
@@ -69,8 +76,10 @@ import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_AMBIGUOUS_OBJE
 import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_FAILED_TO_EXECUTE_QUERY;
 import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_INVALID_STATEMENT;
 import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_LISTING_DATASET_ERROR;
+import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_LISTING_TABLE_ERROR;
 import static io.trino.plugin.bigquery.BigQuerySessionProperties.createDisposition;
 import static io.trino.plugin.bigquery.BigQuerySessionProperties.isQueryResultsCacheEnabled;
+import static io.trino.plugin.bigquery.BigQueryUtil.quote;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -80,36 +89,71 @@ import static java.util.stream.Collectors.joining;
 public class BigQueryClient
 {
     private static final Logger log = Logger.get(BigQueryClient.class);
+    private static final int PAGE_SIZE = 100;
 
-    static final Set<TableDefinition.Type> TABLE_TYPES = ImmutableSet.of(TABLE, VIEW, MATERIALIZED_VIEW, EXTERNAL, SNAPSHOT);
+    // BigQuery has different table_type in `INFORMATION_SCHEMA` than API responses that returns TableDefinition.Type
+    // see https://cloud.google.com/bigquery/docs/information-schema-tables#schema
+    static final Map<TableDefinition.Type, String> TABLE_TYPES = ImmutableMap.<TableDefinition.Type, String>builder()
+            .put(TABLE, "BASE TABLE")
+            .put(VIEW, "VIEW")
+            .put(MATERIALIZED_VIEW, "MATERIALIZED VIEW")
+            .put(EXTERNAL, "EXTERNAL")
+            .put(SNAPSHOT, "SNAPSHOT")
+            .buildOrThrow();
 
     private final BigQuery bigQuery;
     private final BigQueryLabelFactory labelFactory;
+    private final BigQueryTypeManager typeManager;
     private final ViewMaterializationCache materializationCache;
     private final boolean caseInsensitiveNameMatching;
-    private final LoadingCache<String, List<Dataset>> remoteDatasetCache;
+    private final LoadingCache<String, List<DatasetId>> remoteDatasetIdCache;
+    private final Cache<String, Map<String, RemoteDatabaseObject>> remoteDatasetCaseInsentiveCache;
+    private final Cache<DatasetId, Map<TableId, RemoteDatabaseObject>> remoteTableCaseInsentiveCache;
     private final Optional<String> configProjectId;
 
     public BigQueryClient(
             BigQuery bigQuery,
             BigQueryLabelFactory labelFactory,
+            BigQueryTypeManager typeManager,
             boolean caseInsensitiveNameMatching,
+            Duration caseInsensitiveNameMatchingCacheTtl,
             ViewMaterializationCache materializationCache,
             Duration metadataCacheTtl,
             Optional<String> configProjectId)
     {
         this.bigQuery = requireNonNull(bigQuery, "bigQuery is null");
         this.labelFactory = requireNonNull(labelFactory, "labelFactory is null");
+        this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.materializationCache = requireNonNull(materializationCache, "materializationCache is null");
         this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
-        this.remoteDatasetCache = EvictableCacheBuilder.newBuilder()
+        this.remoteDatasetIdCache = EvictableCacheBuilder.newBuilder()
                 .expireAfterWrite(metadataCacheTtl.toMillis(), MILLISECONDS)
                 .shareNothingWhenDisabled()
-                .build(CacheLoader.from(this::listDatasetsFromBigQuery));
+                .build(CacheLoader.from(this::listDatasetIdsFromBigQuery));
+        this.remoteDatasetCaseInsentiveCache = buildCache(caseInsensitiveNameMatchingCacheTtl);
+        this.remoteTableCaseInsentiveCache = buildCache(caseInsensitiveNameMatchingCacheTtl);
         this.configProjectId = requireNonNull(configProjectId, "projectId is null");
     }
 
+    private static <K, V> Cache<K, V> buildCache(Duration cachingTtl)
+    {
+        return EvictableCacheBuilder.newBuilder()
+                .expireAfterWrite(cachingTtl.toMillis(), MILLISECONDS)
+                .shareNothingWhenDisabled()
+                .build();
+    }
+
+    public Optional<RemoteDatabaseObject> toRemoteDataset(DatasetId datasetId)
+    {
+        return toRemoteDataset(datasetId.getProject(), datasetId.getDataset());
+    }
+
     public Optional<RemoteDatabaseObject> toRemoteDataset(String projectId, String datasetName)
+    {
+        return toRemoteDataset(projectId, datasetName, () -> listDatasetIds(projectId));
+    }
+
+    public Optional<RemoteDatabaseObject> toRemoteDataset(String projectId, String datasetName, Supplier<List<DatasetId>> datasetIds)
     {
         requireNonNull(projectId, "projectId is null");
         requireNonNull(datasetName, "datasetName is null");
@@ -118,34 +162,36 @@ public class BigQueryClient
             return Optional.of(RemoteDatabaseObject.of(datasetName));
         }
 
-        Map<String, Optional<RemoteDatabaseObject>> mapping = new HashMap<>();
-        for (Dataset dataset : listDatasets(projectId)) {
-            mapping.merge(
-                    dataset.getDatasetId().getDataset().toLowerCase(ENGLISH),
-                    Optional.of(RemoteDatabaseObject.of(dataset.getDatasetId().getDataset())),
-                    (currentValue, collision) -> currentValue.map(current -> current.registerCollision(collision.get().getOnlyRemoteName())));
+        try {
+            Map<String, RemoteDatabaseObject> datasetMap = remoteDatasetCaseInsentiveCache.get(projectId, () -> {
+                Map<String, RemoteDatabaseObject> mapping = new HashMap<>();
+                for (DatasetId dataset : datasetIds.get()) {
+                    mapping.merge(
+                            dataset.getDataset().toLowerCase(ENGLISH),
+                            RemoteDatabaseObject.of(dataset.getDataset()),
+                            (currentValue, collision) -> currentValue.registerCollision(collision.getOnlyRemoteName()));
+                }
+                return mapping;
+            });
+
+            return Optional.ofNullable(datasetMap.get(datasetName));
         }
-
-        if (!mapping.containsKey(datasetName)) {
-            // dataset doesn't exist
-            mapping.put(datasetName, Optional.empty());
+        catch (ExecutionException e) {
+            return Optional.empty();
         }
-
-        verify(mapping.containsKey(datasetName));
-        return mapping.get(datasetName);
     }
 
-    public Optional<RemoteDatabaseObject> toRemoteTable(String projectId, String remoteDatasetName, String tableName)
+    public Optional<RemoteDatabaseObject> toRemoteTable(ConnectorSession session, String projectId, String remoteDatasetName, String tableName)
     {
-        return toRemoteTable(projectId, remoteDatasetName, tableName, () -> listTables(DatasetId.of(projectId, remoteDatasetName)));
+        return toRemoteTable(projectId, remoteDatasetName, tableName, () -> findTableIdsIgnoreCase(session, DatasetId.of(projectId, remoteDatasetName), tableName));
     }
 
-    public Optional<RemoteDatabaseObject> toRemoteTable(String projectId, String remoteDatasetName, String tableName, Iterable<Table> tables)
+    public Optional<RemoteDatabaseObject> toRemoteTable(String projectId, String remoteDatasetName, String tableName, Iterable<TableId> tableIds)
     {
-        return toRemoteTable(projectId, remoteDatasetName, tableName, () -> tables);
+        return toRemoteTable(projectId, remoteDatasetName, tableName, () -> tableIds);
     }
 
-    private Optional<RemoteDatabaseObject> toRemoteTable(String projectId, String remoteDatasetName, String tableName, Supplier<Iterable<Table>> tables)
+    private Optional<RemoteDatabaseObject> toRemoteTable(String projectId, String remoteDatasetName, String tableName, Supplier<Iterable<TableId>> tableIds)
     {
         requireNonNull(projectId, "projectId is null");
         requireNonNull(remoteDatasetName, "remoteDatasetName is null");
@@ -156,22 +202,24 @@ public class BigQueryClient
         }
 
         TableId cacheKey = TableId.of(projectId, remoteDatasetName, tableName);
+        DatasetId datasetId = DatasetId.of(projectId, remoteDatasetName);
+        try {
+            Map<TableId, RemoteDatabaseObject> tableMap = remoteTableCaseInsentiveCache.get(datasetId, () -> {
+                Map<TableId, RemoteDatabaseObject> mapping = new HashMap<>();
+                for (TableId table : tableIds.get()) {
+                    mapping.merge(
+                            tableIdToLowerCase(table),
+                            RemoteDatabaseObject.of(table.getTable()),
+                            (currentValue, collision) -> currentValue.registerCollision(collision.getOnlyRemoteName()));
+                }
+                return mapping;
+            });
 
-        Map<TableId, Optional<RemoteDatabaseObject>> mapping = new HashMap<>();
-        for (Table table : tables.get()) {
-            mapping.merge(
-                    tableIdToLowerCase(table.getTableId()),
-                    Optional.of(RemoteDatabaseObject.of(table.getTableId().getTable())),
-                    (currentValue, collision) -> currentValue.map(current -> current.registerCollision(collision.get().getOnlyRemoteName())));
+            return Optional.ofNullable(tableMap.get(cacheKey));
         }
-
-        if (!mapping.containsKey(cacheKey)) {
-            // table doesn't exist
-            mapping.put(cacheKey, Optional.empty());
+        catch (ExecutionException e) {
+            return Optional.empty();
         }
-
-        verify(mapping.containsKey(cacheKey));
-        return mapping.get(cacheKey);
     }
 
     private static TableId tableIdToLowerCase(TableId tableId)
@@ -189,12 +237,18 @@ public class BigQueryClient
 
     public Optional<TableInfo> getTable(TableId remoteTableId)
     {
-        return Optional.ofNullable(bigQuery.getTable(remoteTableId));
+        try {
+            return Optional.ofNullable(bigQuery.getTable(remoteTableId));
+        }
+        catch (BigQueryException e) {
+            // getTable method throws an exception in some situations, e.g. wild card tables
+            return Optional.empty();
+        }
     }
 
-    public TableInfo getCachedTable(Duration viewExpiration, TableInfo remoteTableId, List<String> requiredColumns)
+    public TableInfo getCachedTable(Duration viewExpiration, TableInfo remoteTableId, List<String> requiredColumns, Optional<String> filter)
     {
-        String query = selectSql(remoteTableId, requiredColumns);
+        String query = selectSql(remoteTableId.getTableId(), requiredColumns, filter);
         log.debug("query is %s", query);
         return materializationCache.getCachedTable(this, query, viewExpiration, remoteTableId);
     }
@@ -218,28 +272,73 @@ public class BigQueryClient
         return projectId;
     }
 
-    public Iterable<Dataset> listDatasets(String projectId)
+    protected DatasetId toDatasetId(String schemaName)
+    {
+        return DatasetId.of(getProjectId(), schemaName);
+    }
+
+    protected String toSchemaName(DatasetId datasetId)
+    {
+        return datasetId.getDataset();
+    }
+
+    public List<DatasetId> listDatasetIds(String projectId)
     {
         try {
-            return remoteDatasetCache.get(projectId);
+            return remoteDatasetIdCache.get(projectId);
         }
         catch (ExecutionException e) {
             throw new TrinoException(BIGQUERY_LISTING_DATASET_ERROR, "Failed to retrieve datasets from BigQuery", e);
         }
     }
 
-    private List<Dataset> listDatasetsFromBigQuery(String projectId)
+    private List<DatasetId> listDatasetIdsFromBigQuery(String projectId)
     {
-        return stream(bigQuery.listDatasets(projectId).iterateAll())
+        // BigQuery.listDatasets returns partial information on each dataset. See javadoc for more details.
+        return stream(bigQuery.listDatasets(projectId, BigQuery.DatasetListOption.pageSize(PAGE_SIZE)).iterateAll())
+                .map(Dataset::getDatasetId)
                 .collect(toImmutableList());
     }
 
-    public Iterable<Table> listTables(DatasetId remoteDatasetId)
+    public Iterable<TableId> listTableIds(DatasetId remoteDatasetId)
     {
-        Iterable<Table> allTables = bigQuery.listTables(remoteDatasetId).iterateAll();
+        // BigQuery.listTables returns partial information on each table. See javadoc for more details.
+        Iterable<Table> allTables;
+        try {
+            allTables = bigQuery.listTables(remoteDatasetId, BigQuery.TableListOption.pageSize(PAGE_SIZE)).iterateAll();
+        }
+        catch (BigQueryException e) {
+            throw new TrinoException(BIGQUERY_LISTING_TABLE_ERROR, "Failed to retrieve tables from BigQuery", e);
+        }
         return stream(allTables)
-                .filter(table -> TABLE_TYPES.contains(table.getDefinition().getType()))
+                .filter(table -> TABLE_TYPES.containsKey(table.getDefinition().getType()))
+                .map(TableInfo::getTableId)
                 .collect(toImmutableList());
+    }
+
+    public Iterable<TableId> findTableIdsIgnoreCase(ConnectorSession session, DatasetId remoteDatasetId, String tableName)
+    {
+        try {
+            TableResult tableNamesMatchingResults = executeQuery(session, """
+                    SELECT table_name
+                    FROM %s.%s.INFORMATION_SCHEMA.TABLES
+                    WHERE LOWER(table_name) = '%s' AND table_type IN (%s)""".formatted(
+                    quote(remoteDatasetId.getProject()),
+                    quote(remoteDatasetId.getDataset()),
+                    tableName.toLowerCase(ENGLISH),
+                    TABLE_TYPES.values().stream().map(value -> "'" + value + "'").collect(Collectors.joining(","))));
+
+            return tableNamesMatchingResults.streamAll()
+                    .map(row -> TableId.of(remoteDatasetId.getProject(), remoteDatasetId.getDataset(), row.getFirst().getStringValue()))
+                    .collect(toImmutableList());
+        }
+        catch (TrinoException e) {
+            if (e.getMessage().contains("Dataset %s:%s was not found".formatted(remoteDatasetId.getProject(), remoteDatasetId.getDataset()))) {
+                // means that schema is missing, let MetadataManager handle it gracefully
+                return ImmutableList.of();
+            }
+            throw e;
+        }
     }
 
     Table update(TableInfo table)
@@ -250,6 +349,8 @@ public class BigQueryClient
     public void createSchema(DatasetInfo datasetInfo)
     {
         bigQuery.create(datasetInfo);
+        remoteDatasetIdCache.invalidate(datasetInfo.getDatasetId().getProject());
+        remoteDatasetCaseInsentiveCache.invalidate(datasetInfo.getDatasetId().getProject());
     }
 
     public void dropSchema(DatasetId datasetId, boolean cascade)
@@ -260,16 +361,20 @@ public class BigQueryClient
         else {
             bigQuery.delete(datasetId);
         }
+        remoteDatasetIdCache.invalidate(datasetId.getProject());
+        remoteDatasetCaseInsentiveCache.invalidate(datasetId.getProject());
     }
 
     public void createTable(TableInfo tableInfo)
     {
         bigQuery.create(tableInfo);
+        remoteTableCaseInsentiveCache.invalidate(DatasetId.of(tableInfo.getTableId().getProject(), tableInfo.getTableId().getDataset()));
     }
 
     public void dropTable(TableId tableId)
     {
         bigQuery.delete(tableId);
+        remoteTableCaseInsentiveCache.invalidate(DatasetId.of(tableId.getProject(), tableId.getDataset()));
     }
 
     Job create(JobInfo jobInfo)
@@ -277,10 +382,10 @@ public class BigQueryClient
         return bigQuery.create(jobInfo);
     }
 
-    public void executeUpdate(ConnectorSession session, QueryJobConfiguration job)
+    public long executeUpdate(ConnectorSession session, QueryJobConfiguration job)
     {
         log.debug("Execute query: %s", job.getQuery());
-        execute(session, job);
+        return execute(session, job).getTotalRows();
     }
 
     public TableResult executeQuery(ConnectorSession session, String sql)
@@ -300,6 +405,9 @@ public class BigQueryClient
                 .build();
         try {
             return bigQuery.query(jobWithQueryLabel);
+        }
+        catch (BigQueryException | JobException e) {
+            throw new TrinoException(BIGQUERY_FAILED_TO_EXECUTE_QUERY, "Failed to run the query: " + firstNonNull(e.getMessage(), e), e);
         }
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -328,13 +436,43 @@ public class BigQueryClient
         return requireNonNull(queryStatistics.getSchema(), "Cannot determine schema for query");
     }
 
+    public boolean useStorageApi(String sql, TableId destinationTable)
+    {
+        JobInfo jobInfo = JobInfo.of(QueryJobConfiguration.newBuilder(sql).setDryRun(true).setDestinationTable(destinationTable).build());
+        try {
+            bigQuery.create(jobInfo);
+        }
+        catch (BigQueryException e) {
+            if (e.getMessage().startsWith("Duplicate column names in the result are not supported when a destination table is present.")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public TableId getDestinationTable(String sql)
+    {
+        log.debug("Get destination table from query: %s", sql);
+        JobInfo jobInfo = JobInfo.of(QueryJobConfiguration.newBuilder(sql).setDryRun(true).build());
+
+        JobConfiguration jobConfiguration;
+        try {
+            jobConfiguration = bigQuery.create(jobInfo).getConfiguration();
+        }
+        catch (BigQueryException e) {
+            throw new TrinoException(BIGQUERY_INVALID_STATEMENT, "Failed to get destination table for query. " + firstNonNull(e.getMessage(), e), e);
+        }
+
+        return requireNonNull(((QueryJobConfiguration) jobConfiguration).getDestinationTable(), "Cannot determine destination table for query");
+    }
+
     public static String selectSql(TableId table, List<String> requiredColumns, Optional<String> filter)
     {
         String columns = requiredColumns.stream().map(column -> format("`%s`", column)).collect(joining(","));
         return selectSql(table, columns, filter);
     }
 
-    private static String selectSql(TableId table, String formattedColumns, Optional<String> filter)
+    public static String selectSql(TableId table, String formattedColumns, Optional<String> filter)
     {
         String tableName = fullTableName(table);
         String query = format("SELECT %s FROM `%s`", formattedColumns, tableName);
@@ -344,42 +482,39 @@ public class BigQueryClient
         return query + " WHERE " + filter.get();
     }
 
-    private String selectSql(TableInfo remoteTable, List<String> requiredColumns)
-    {
-        String columns = requiredColumns.isEmpty() ? "*" :
-                requiredColumns.stream().map(column -> format("`%s`", column)).collect(joining(","));
-
-        return selectSql(remoteTable.getTableId(), columns);
-    }
-
-    // assuming the SELECT part is properly formatted, can be used to call functions such as COUNT and SUM
-    public String selectSql(TableId table, String formattedColumns)
-    {
-        String tableName = fullTableName(table);
-        return format("SELECT %s FROM `%s`", formattedColumns, tableName);
-    }
-
-    public void insert(InsertAllRequest insertAllRequest)
-    {
-        InsertAllResponse response = bigQuery.insertAll(insertAllRequest);
-        if (response.hasErrors()) {
-            // Note that BigQuery doesn't rollback inserted rows
-            throw new TrinoException(BIGQUERY_FAILED_TO_EXECUTE_QUERY, format("Failed to insert rows: %s", response.getInsertErrors()));
-        }
-    }
-
     private static String fullTableName(TableId remoteTableId)
     {
-        String remoteSchemaName = remoteTableId.getDataset();
-        String remoteTableName = remoteTableId.getTable();
-        remoteTableId = TableId.of(remoteTableId.getProject(), remoteSchemaName, remoteTableName);
         return format("%s.%s.%s", remoteTableId.getProject(), remoteTableId.getDataset(), remoteTableId.getTable());
+    }
+
+    public Stream<RelationCommentMetadata> listRelationCommentMetadata(ConnectorSession session, BigQueryClient client, String schemaName)
+    {
+        TableResult result = client.executeQuery(session, """
+                SELECT tbls.table_name, options.option_value
+                FROM %1$s.`INFORMATION_SCHEMA`.`TABLES` tbls
+                LEFT JOIN %1$s.`INFORMATION_SCHEMA`.`TABLE_OPTIONS` options
+                ON tbls.table_schema = options.table_schema AND tbls.table_name = options.table_name AND options.option_name = 'description'
+                """.formatted(quote(schemaName)));
+        return result.streamValues()
+                .map(row -> {
+                    Optional<String> comment = row.get(1).isNull() ? Optional.empty() : Optional.of(unquoteOptionValue(row.get(1).getStringValue()));
+                    return new RelationCommentMetadata(new SchemaTableName(schemaName, row.get(0).getStringValue()), false, comment);
+                });
+    }
+
+    private static String unquoteOptionValue(String quoted)
+    {
+        // option_value returns quoted string, e.g. "test data"
+        return quoted.substring(1, quoted.length() - 1)
+                .replace("\"\"", "\"")
+                .replace("\\\\", "\\")
+                .replace("\\\"", "\"");
     }
 
     public List<BigQueryColumnHandle> getColumns(BigQueryTableHandle tableHandle)
     {
-        if (tableHandle.getProjectedColumns().isPresent()) {
-            return tableHandle.getProjectedColumns().get();
+        if (tableHandle.projectedColumns().isPresent()) {
+            return tableHandle.projectedColumns().get();
         }
         checkArgument(tableHandle.isNamedRelation(), "Cannot get columns for %s", tableHandle);
 
@@ -388,7 +523,7 @@ public class BigQueryClient
         return buildColumnHandles(tableInfo);
     }
 
-    public static List<BigQueryColumnHandle> buildColumnHandles(TableInfo tableInfo)
+    public List<BigQueryColumnHandle> buildColumnHandles(TableInfo tableInfo)
     {
         Schema schema = tableInfo.getDefinition().getSchema();
         if (schema == null) {
@@ -397,8 +532,8 @@ public class BigQueryClient
         }
         return schema.getFields()
                 .stream()
-                .filter(Conversions::isSupportedType)
-                .map(Conversions::toColumnHandle)
+                .filter(typeManager::isSupportedType)
+                .map(typeManager::toColumnHandle)
                 .collect(toImmutableList());
     }
 

@@ -19,6 +19,7 @@ import io.trino.Session;
 import io.trino.client.NodeVersion;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.connector.MockConnectorFactory;
+import io.trino.connector.MockConnectorPlugin;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.AbstractMockMetadata;
 import io.trino.metadata.ColumnPropertyManager;
@@ -36,13 +37,13 @@ import io.trino.metadata.ViewDefinition;
 import io.trino.security.AccessControl;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
-import io.trino.spi.connector.MaterializedViewNotFoundException;
 import io.trino.spi.connector.SaveMode;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TestingColumnHandle;
@@ -55,7 +56,8 @@ import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.planner.TestingConnectorTransactionHandle;
 import io.trino.sql.tree.QualifiedName;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
 import io.trino.testing.TestingMetadata.TestingTableHandle;
 import io.trino.transaction.TransactionManager;
 import org.junit.jupiter.api.AfterEach;
@@ -108,8 +110,9 @@ public abstract class BaseDataDefinitionTaskTest
 
     protected static final String MATERIALIZED_VIEW_PROPERTY_2_NAME = "property2";
     protected static final String MATERIALIZED_VIEW_PROPERTY_2_DEFAULT_VALUE = "defaultProperty2Value";
+    protected static final Map<String, Object> MATERIALIZED_VIEW_PROPERTIES = ImmutableMap.of(MATERIALIZED_VIEW_PROPERTY_2_NAME, MATERIALIZED_VIEW_PROPERTY_2_DEFAULT_VALUE);
 
-    private LocalQueryRunner queryRunner;
+    private QueryRunner queryRunner;
     protected Session testSession;
     protected MockMetadata metadata;
     protected PlannerContext plannerContext;
@@ -124,9 +127,10 @@ public abstract class BaseDataDefinitionTaskTest
         testSession = testSessionBuilder()
                 .setCatalog(TEST_CATALOG_NAME)
                 .build();
-        queryRunner = LocalQueryRunner.create(testSession);
+        queryRunner = new StandaloneQueryRunner(testSession);
         transactionManager = queryRunner.getTransactionManager();
-        queryRunner.createCatalog(TEST_CATALOG_NAME, MockConnectorFactory.create("initial"), ImmutableMap.of());
+        queryRunner.installPlugin(new MockConnectorPlugin(MockConnectorFactory.create("initial")));
+        queryRunner.createCatalog(TEST_CATALOG_NAME, "initial", ImmutableMap.of());
 
         metadata = new MockMetadata(TEST_CATALOG_NAME);
         plannerContext = plannerContextBuilder().withMetadata(metadata).build();
@@ -177,7 +181,7 @@ public abstract class BaseDataDefinitionTaskTest
 
     protected static QualifiedName asQualifiedName(QualifiedObjectName qualifiedObjectName)
     {
-        return QualifiedName.of(qualifiedObjectName.getCatalogName(), qualifiedObjectName.getSchemaName(), qualifiedObjectName.getObjectName());
+        return QualifiedName.of(qualifiedObjectName.catalogName(), qualifiedObjectName.schemaName(), qualifiedObjectName.objectName());
     }
 
     protected MaterializedViewDefinition someMaterializedView()
@@ -196,8 +200,7 @@ public abstract class BaseDataDefinitionTaskTest
                 Optional.empty(),
                 Identity.ofUser("owner"),
                 ImmutableList.of(),
-                Optional.empty(),
-                ImmutableMap.of(MATERIALIZED_VIEW_PROPERTY_2_NAME, MATERIALIZED_VIEW_PROPERTY_2_DEFAULT_VALUE));
+                Optional.empty());
     }
 
     protected static ConnectorTableMetadata someTable(QualifiedObjectName tableName)
@@ -253,6 +256,7 @@ public abstract class BaseDataDefinitionTaskTest
         private final Map<SchemaTableName, ConnectorTableMetadata> tables = new ConcurrentHashMap<>();
         private final Map<SchemaTableName, ViewDefinition> views = new ConcurrentHashMap<>();
         private final Map<SchemaTableName, MaterializedViewDefinition> materializedViews = new ConcurrentHashMap<>();
+        private final Map<SchemaTableName, Map<String, Object>> materializedViewProperties = new ConcurrentHashMap<>();
 
         public MockMetadata(String catalogName)
         {
@@ -323,7 +327,7 @@ public abstract class BaseDataDefinitionTaskTest
         @Override
         public TableSchema getTableSchema(Session session, TableHandle tableHandle)
         {
-            return new TableSchema(TEST_CATALOG_NAME, getTableMetadata(tableHandle).getTableSchema());
+            return new TableSchema(new CatalogName(TEST_CATALOG_NAME), getTableMetadata(tableHandle).getTableSchema());
         }
 
         @Override
@@ -339,7 +343,7 @@ public abstract class BaseDataDefinitionTaskTest
         @Override
         public TableMetadata getTableMetadata(Session session, TableHandle tableHandle)
         {
-            return new TableMetadata(TEST_CATALOG_NAME, getTableMetadata(tableHandle));
+            return new TableMetadata(new CatalogName(TEST_CATALOG_NAME), getTableMetadata(tableHandle));
         }
 
         @Override
@@ -361,6 +365,12 @@ public abstract class BaseDataDefinitionTaskTest
             SchemaTableName oldTableName = currentTableName.getSchemaTableName();
             tables.put(newTableName.asSchemaTableName(), verifyNotNull(tables.get(oldTableName), "Table not found %s", oldTableName));
             tables.remove(oldTableName);
+        }
+
+        @Override
+        public Optional<Type> getSupportedType(Session session, CatalogHandle catalogHandle, Map<String, Object> tableProperties, Type type)
+        {
+            return Optional.empty();
         }
 
         @Override
@@ -420,6 +430,19 @@ public abstract class BaseDataDefinitionTaskTest
             tables.put(tableName, new ConnectorTableMetadata(tableName, columns.build()));
         }
 
+        @Override
+        public void dropNotNullConstraint(Session session, TableHandle tableHandle, ColumnHandle columnHandle)
+        {
+            SchemaTableName tableName = getTableName(tableHandle);
+            ConnectorTableMetadata metadata = tables.get(tableName);
+            String columnName = ((TestingColumnHandle) columnHandle).getName();
+
+            List<ColumnMetadata> columns = metadata.getColumns().stream()
+                    .map(column -> column.getName().equals(columnName) ? ColumnMetadata.builderFrom(column).setNullable(true).build() : column)
+                    .collect(toImmutableList());
+            tables.put(tableName, new ConnectorTableMetadata(tableName, columns));
+        }
+
         private ConnectorTableMetadata getTableMetadata(TableHandle tableHandle)
         {
             return tables.get(getTableName(tableHandle));
@@ -427,7 +450,7 @@ public abstract class BaseDataDefinitionTaskTest
 
         private SchemaTableName getTableName(TableHandle tableHandle)
         {
-            return ((TestingTableHandle) tableHandle.getConnectorHandle()).getTableName();
+            return ((TestingTableHandle) tableHandle.connectorHandle()).getTableName();
         }
 
         @Override
@@ -455,10 +478,23 @@ public abstract class BaseDataDefinitionTaskTest
         }
 
         @Override
-        public void createMaterializedView(Session session, QualifiedObjectName viewName, MaterializedViewDefinition definition, boolean replace, boolean ignoreExisting)
+        public Map<String, Object> getMaterializedViewProperties(Session session, QualifiedObjectName viewName, MaterializedViewDefinition materializedViewDefinition)
+        {
+            return materializedViewProperties.get(viewName.asSchemaTableName());
+        }
+
+        @Override
+        public void createMaterializedView(
+                Session session,
+                QualifiedObjectName viewName,
+                MaterializedViewDefinition definition,
+                Map<String, Object> properties,
+                boolean replace,
+                boolean ignoreExisting)
         {
             checkArgument(ignoreExisting || !materializedViews.containsKey(viewName.asSchemaTableName()));
             materializedViews.put(viewName.asSchemaTableName(), definition);
+            materializedViewProperties.put(viewName.asSchemaTableName(), properties);
         }
 
         @Override
@@ -467,9 +503,7 @@ public abstract class BaseDataDefinitionTaskTest
                 QualifiedObjectName viewName,
                 Map<String, Optional<Object>> properties)
         {
-            MaterializedViewDefinition existingDefinition = getMaterializedView(session, viewName)
-                    .orElseThrow(() -> new MaterializedViewNotFoundException(viewName.asSchemaTableName()));
-            Map<String, Object> newProperties = new HashMap<>(existingDefinition.getProperties());
+            Map<String, Object> newProperties = new HashMap<>(materializedViewProperties.getOrDefault(viewName.asSchemaTableName(), ImmutableMap.of()));
             for (Entry<String, Optional<Object>> entry : properties.entrySet()) {
                 if (entry.getValue().isPresent()) {
                     newProperties.put(entry.getKey(), entry.getValue().orElseThrow());
@@ -478,19 +512,7 @@ public abstract class BaseDataDefinitionTaskTest
                     newProperties.remove(entry.getKey());
                 }
             }
-            materializedViews.put(
-                    viewName.asSchemaTableName(),
-                    new MaterializedViewDefinition(
-                            existingDefinition.getOriginalSql(),
-                            existingDefinition.getCatalog(),
-                            existingDefinition.getSchema(),
-                            existingDefinition.getColumns(),
-                            existingDefinition.getGracePeriod(),
-                            existingDefinition.getComment(),
-                            existingDefinition.getRunAsIdentity().get(),
-                            existingDefinition.getPath(),
-                            existingDefinition.getStorageTable(),
-                            newProperties));
+            materializedViewProperties.put(viewName.asSchemaTableName(), newProperties);
         }
 
         @Override
@@ -504,14 +526,13 @@ public abstract class BaseDataDefinitionTaskTest
                             view.getCatalog(),
                             view.getSchema(),
                             view.getColumns().stream()
-                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.getName()) ? new ViewColumn(currentViewColumn.getName(), currentViewColumn.getType(), comment) : currentViewColumn)
+                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.name()) ? new ViewColumn(currentViewColumn.name(), currentViewColumn.type(), comment) : currentViewColumn)
                                     .collect(toImmutableList()),
                             view.getGracePeriod(),
                             view.getComment(),
                             view.getRunAsIdentity().get(),
                             view.getPath(),
-                            view.getStorageTable(),
-                            view.getProperties()));
+                            view.getStorageTable()));
         }
 
         @Override
@@ -527,7 +548,13 @@ public abstract class BaseDataDefinitionTaskTest
         }
 
         @Override
-        public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace)
+        public boolean isView(Session session, QualifiedObjectName viewName)
+        {
+            return getView(session, viewName).isPresent();
+        }
+
+        @Override
+        public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> viewProperties, boolean replace)
         {
             checkArgument(replace || !views.containsKey(viewName.asSchemaTableName()));
             views.put(viewName.asSchemaTableName(), definition);
@@ -601,7 +628,7 @@ public abstract class BaseDataDefinitionTaskTest
                             view.getCatalog(),
                             view.getSchema(),
                             view.getColumns().stream()
-                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.getName()) ? new ViewColumn(currentViewColumn.getName(), currentViewColumn.getType(), comment) : currentViewColumn)
+                                    .map(currentViewColumn -> columnName.equals(currentViewColumn.name()) ? new ViewColumn(currentViewColumn.name(), currentViewColumn.type(), comment) : currentViewColumn)
                                     .collect(toImmutableList()),
                             view.getComment(),
                             view.getRunAsIdentity(),

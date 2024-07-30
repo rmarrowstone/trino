@@ -25,17 +25,15 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.math.BigInteger;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestReadJsonTransactionLog
 {
@@ -44,49 +42,41 @@ public class TestReadJsonTransactionLog
     @Test
     public void testAdd()
     {
-        assertEquals(
-                readJsonTransactionLogs("databricks73/person/_delta_log")
-                        .map(this::deserialize)
-                        .map(DeltaLakeTransactionLogEntry::getAdd)
-                        .filter(Objects::nonNull)
-                        .map(AddFileEntry::getPath)
-                        .filter(Objects::nonNull)
-                        .count(),
-                18);
+        assertThat(readJsonTransactionLogs("databricks73/person/_delta_log")
+                .map(this::deserialize)
+                .map(DeltaLakeTransactionLogEntry::getAdd)
+                .filter(Objects::nonNull)
+                .map(AddFileEntry::getPath)
+                .filter(Objects::nonNull)
+                .count()).isEqualTo(18);
 
-        assertEquals(
-                readJsonTransactionLogs("deltalake/person/_delta_log")
-                        .map(this::deserialize)
-                        .map(DeltaLakeTransactionLogEntry::getAdd)
-                        .filter(Objects::nonNull)
-                        .map(AddFileEntry::getPath)
-                        .filter(Objects::nonNull)
-                        .count(),
-                18);
+        assertThat(readJsonTransactionLogs("deltalake/person/_delta_log")
+                .map(this::deserialize)
+                .map(DeltaLakeTransactionLogEntry::getAdd)
+                .filter(Objects::nonNull)
+                .map(AddFileEntry::getPath)
+                .filter(Objects::nonNull)
+                .count()).isEqualTo(18);
     }
 
     @Test
     public void testRemove()
     {
-        assertEquals(
-                readJsonTransactionLogs("databricks73/person/_delta_log")
-                        .map(this::deserialize)
-                        .map(DeltaLakeTransactionLogEntry::getRemove)
-                        .filter(Objects::nonNull)
-                        .map(RemoveFileEntry::getPath)
-                        .filter(Objects::nonNull)
-                        .count(),
-                6);
+        assertThat(readJsonTransactionLogs("databricks73/person/_delta_log")
+                .map(this::deserialize)
+                .map(DeltaLakeTransactionLogEntry::getRemove)
+                .filter(Objects::nonNull)
+                .map(RemoveFileEntry::path)
+                .filter(Objects::nonNull)
+                .count()).isEqualTo(6);
 
-        assertEquals(
-                readJsonTransactionLogs("deltalake/person/_delta_log")
-                        .map(this::deserialize)
-                        .map(DeltaLakeTransactionLogEntry::getRemove)
-                        .filter(Objects::nonNull)
-                        .map(RemoveFileEntry::getPath)
-                        .filter(Objects::nonNull)
-                        .count(),
-                6);
+        assertThat(readJsonTransactionLogs("deltalake/person/_delta_log")
+                .map(this::deserialize)
+                .map(DeltaLakeTransactionLogEntry::getRemove)
+                .filter(Objects::nonNull)
+                .map(RemoveFileEntry::path)
+                .filter(Objects::nonNull)
+                .count()).isEqualTo(6);
     }
 
     @Test
@@ -94,9 +84,9 @@ public class TestReadJsonTransactionLog
             throws JsonProcessingException
     {
         LastCheckpoint lastCheckpoint = objectMapper.readValue("{\"version\":10,\"size\":17}", LastCheckpoint.class);
-        assertEquals(lastCheckpoint.getVersion(), 10L);
-        assertEquals(lastCheckpoint.getSize(), BigInteger.valueOf(17L));
-        assertEquals(lastCheckpoint.getParts(), Optional.empty());
+        assertThat(lastCheckpoint.version()).isEqualTo(10L);
+        assertThat(lastCheckpoint.size()).isEqualTo(17);
+        assertThat(lastCheckpoint.parts()).isEmpty();
     }
 
     @Test
@@ -104,9 +94,9 @@ public class TestReadJsonTransactionLog
             throws JsonProcessingException
     {
         LastCheckpoint lastCheckpoint = objectMapper.readValue("{\"version\":237580,\"size\":658573,\"parts\":2}", LastCheckpoint.class);
-        assertEquals(lastCheckpoint.getVersion(), 237580L);
-        assertEquals(lastCheckpoint.getSize(), BigInteger.valueOf(658573L));
-        assertEquals(lastCheckpoint.getParts(), Optional.of(2));
+        assertThat(lastCheckpoint.version()).isEqualTo(237580L);
+        assertThat(lastCheckpoint.size()).isEqualTo(658573L);
+        assertThat(lastCheckpoint.parts()).hasValue(2);
     }
 
     private Stream<String> readJsonTransactionLogs(String location)

@@ -20,18 +20,21 @@ import software.amazon.awssdk.services.s3.S3Client;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.concurrent.Executor;
 
 import static java.util.Objects.requireNonNull;
 
 final class S3OutputFile
         implements TrinoOutputFile
 {
+    private final Executor uploadExecutor;
     private final S3Client client;
     private final S3Context context;
     private final S3Location location;
 
-    public S3OutputFile(S3Client client, S3Context context, S3Location location)
+    public S3OutputFile(Executor uploadExecutor, S3Client client, S3Context context, S3Location location)
     {
+        this.uploadExecutor = requireNonNull(uploadExecutor, "uploadExecutor is null");
         this.client = requireNonNull(client, "client is null");
         this.context = requireNonNull(context, "context is null");
         this.location = requireNonNull(location, "location is null");
@@ -39,23 +42,18 @@ final class S3OutputFile
     }
 
     @Override
-    public OutputStream create(AggregatedMemoryContext memoryContext)
-    {
-        // always overwrite since Trino usually creates unique file names
-        return createOrOverwrite(memoryContext);
-    }
-
-    @Override
-    public OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
-    {
-        return new S3OutputStream(memoryContext, client, context, location);
-    }
-
-    @Override
-    public OutputStream createExclusive(AggregatedMemoryContext memoryContext)
+    public void createOrOverwrite(byte[] data)
             throws IOException
     {
-        throw new IOException("S3 does not support exclusive create");
+        try (OutputStream out = create()) {
+            out.write(data);
+        }
+    }
+
+    @Override
+    public OutputStream create(AggregatedMemoryContext memoryContext)
+    {
+        return new S3OutputStream(memoryContext, uploadExecutor, client, context, location);
     }
 
     @Override

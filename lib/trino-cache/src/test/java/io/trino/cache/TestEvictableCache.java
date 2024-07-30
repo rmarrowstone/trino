@@ -21,7 +21,6 @@ import com.google.common.collect.ImmutableSet;
 import io.airlift.testing.TestingTicker;
 import io.trino.cache.EvictableCacheBuilder.DisabledCacheImplementation;
 import org.gaul.modernizer_maven_annotations.SuppressModernizer;
-import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -32,11 +31,11 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Exchanger;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
@@ -45,6 +44,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.cache.CacheStatsAssertions.assertCacheStats;
+import static io.trino.testing.assertions.Assert.assertEventually;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.concurrent.Executors.newFixedThreadPool;
@@ -287,7 +287,7 @@ public class TestEvictableCache
         assertThat(value).isEqualTo("abc");
     }
 
-    @RepeatedTest(value = 10, failureThreshold = 5)
+    @Test
     @Timeout(TEST_TIMEOUT_SECONDS)
     public void testLoadFailure()
             throws Exception
@@ -301,17 +301,25 @@ public class TestEvictableCache
 
         ExecutorService executor = newFixedThreadPool(2);
         try {
-            AtomicBoolean first = new AtomicBoolean(true);
-            CyclicBarrier barrier = new CyclicBarrier(2);
+            Exchanger<Thread> exchanger = new Exchanger<>();
+            CountDownLatch secondUnblocked = new CountDownLatch(1);
 
             List<Future<String>> futures = new ArrayList<>();
             for (int i = 0; i < 2; i++) {
+                boolean first = i == 0;
                 futures.add(executor.submit(() -> {
-                    barrier.await(10, SECONDS);
+                    if (!first) {
+                        // Wait for the first one to start the call
+                        exchanger.exchange(Thread.currentThread(), 10, SECONDS);
+                        // Prove that we are back in RUNNABLE state.
+                        secondUnblocked.countDown();
+                    }
                     return cache.get(key, () -> {
-                        if (first.compareAndSet(true, false)) {
-                            // first
-                            Thread.sleep(1); // increase chances that second thread calls cache.get before we return
+                        if (first) {
+                            Thread secondThread = exchanger.exchange(null, 10, SECONDS);
+                            assertThat(secondUnblocked.await(10, SECONDS)).isTrue();
+                            // Wait for the second one to hang inside the cache.get call.
+                            assertEventually(() -> assertThat(secondThread.getState()).isNotEqualTo(Thread.State.RUNNABLE));
                             throw new RuntimeException("first attempt is poised to fail");
                         }
                         return "success";
@@ -352,7 +360,7 @@ public class TestEvictableCache
 
     /**
      * Test that the loader is invoked only once for concurrent invocations of {{@link LoadingCache#get(Object, Callable)} with equal keys.
-     * This is a behavior of Guava Cache as well. While this is necessarily desirable behavior (see
+     * This is a behavior of Guava Cache as well. While this is not necessarily desirable behavior (see
      * <a href="https://github.com/trinodb/trino/issues/11067">https://github.com/trinodb/trino/issues/11067</a>),
      * the test exists primarily to document current state and support discussion, should the current state change.
      */
@@ -440,21 +448,15 @@ public class TestEvictableCache
                     assertThat(loadOngoing.await(10, SECONDS)).isTrue(); // 1
 
                     switch (invalidation) {
-                        case INVALIDATE_KEY:
-                            cache.invalidate(key);
-                            break;
-                        case INVALIDATE_PREDEFINED_KEYS:
-                            cache.invalidateAll(ImmutableList.of(key));
-                            break;
-                        case INVALIDATE_SELECTED_KEYS:
+                        case INVALIDATE_KEY -> cache.invalidate(key);
+                        case INVALIDATE_PREDEFINED_KEYS -> cache.invalidateAll(ImmutableList.of(key));
+                        case INVALIDATE_SELECTED_KEYS -> {
                             Set<Integer> keys = cache.asMap().keySet().stream()
                                     .filter(foundKey -> (int) foundKey == key)
                                     .collect(toImmutableSet());
                             cache.invalidateAll(keys);
-                            break;
-                        case INVALIDATE_ALL:
-                            cache.invalidateAll();
-                            break;
+                        }
+                        case INVALIDATE_ALL -> cache.invalidateAll();
                     }
 
                     invalidated.countDown(); // 2
@@ -467,6 +469,9 @@ public class TestEvictableCache
                 assertThat(threadA.get()).isEqualTo("stale value");
                 assertThat(threadB.get()).isEqualTo("fresh value");
             }
+            catch (AssertionError e) {
+                throw new AssertionError("Error for invalidation=%s: %s".formatted(invalidation, e.getMessage()), e);
+            }
             finally {
                 executor.shutdownNow();
                 assertThat(executor.awaitTermination(10, SECONDS)).isTrue();
@@ -477,7 +482,7 @@ public class TestEvictableCache
     /**
      * Covers https://github.com/google/guava/issues/1881
      */
-    @RepeatedTest(10)
+    @Test
     @Timeout(TEST_TIMEOUT_SECONDS)
     public void testInvalidateAndLoadConcurrently()
             throws Exception
@@ -508,21 +513,15 @@ public class TestEvictableCache
 
                             // invalidate
                             switch (invalidation) {
-                                case INVALIDATE_KEY:
-                                    cache.invalidate(key);
-                                    break;
-                                case INVALIDATE_PREDEFINED_KEYS:
-                                    cache.invalidateAll(ImmutableList.of(key));
-                                    break;
-                                case INVALIDATE_SELECTED_KEYS:
+                                case INVALIDATE_KEY -> cache.invalidate(key);
+                                case INVALIDATE_PREDEFINED_KEYS -> cache.invalidateAll(ImmutableList.of(key));
+                                case INVALIDATE_SELECTED_KEYS -> {
                                     Set<Integer> keys = cache.asMap().keySet().stream()
                                             .filter(foundKey -> (int) foundKey == key)
                                             .collect(toImmutableSet());
                                     cache.invalidateAll(keys);
-                                    break;
-                                case INVALIDATE_ALL:
-                                    cache.invalidateAll();
-                                    break;
+                                }
+                                case INVALIDATE_ALL -> cache.invalidateAll();
                             }
 
                             // read through cache
@@ -539,6 +538,9 @@ public class TestEvictableCache
 
                 assertThat(remoteState.get()).isEqualTo(2 * 3 * 5 * 7);
                 assertThat((long) cache.get(key, remoteState::get)).isEqualTo(remoteState.get());
+            }
+            catch (AssertionError e) {
+                throw new AssertionError("Error for invalidation=%s: %s".formatted(invalidation, e.getMessage()), e);
             }
             finally {
                 executor.shutdownNow();

@@ -14,12 +14,7 @@
 
 import React from "react";
 
-import {
-    getProgressBarPercentage,
-    getProgressBarTitle,
-    getQueryStateColor,
-    isQueryEnded
-} from "../utils";
+import {getProgressBarPercentage, getProgressBarTitle, getQueryStateColor, isQueryEnded} from "../utils";
 
 export class QueryHeader extends React.Component {
     constructor(props) {
@@ -107,6 +102,8 @@ export class QueryHeader extends React.Component {
                                     {this.renderTab("timeline.html", "Splits")}
                                     &nbsp;
                                     <a href={"/ui/api/query/" + query.queryId + "?pretty"} className="btn btn-info navbar-btn" target="_blank">JSON</a>
+                                    &nbsp;
+                                    {this.renderTab("references.html", "References")}
                                 </td>
                             </tr>
                             </tbody>

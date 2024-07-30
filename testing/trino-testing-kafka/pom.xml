@@ -5,15 +5,12 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>432-SNAPSHOT</version>
+        <version>454-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-testing-kafka</artifactId>
-
-    <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-    </properties>
+    <description>Trino - Testing Kafka</description>
 
     <dependencies>
         <dependency>

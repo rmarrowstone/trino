@@ -14,6 +14,7 @@
 package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.QualifiedObjectName;
@@ -46,11 +47,11 @@ public class TestCommentTask
     {
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
         metadata.createTable(testSession, TEST_CATALOG_NAME, someTable(tableName), FAIL);
-        assertThat(metadata.getTableMetadata(testSession, metadata.getTableHandle(testSession, tableName).get()).getMetadata().getComment())
+        assertThat(metadata.getTableMetadata(testSession, metadata.getTableHandle(testSession, tableName).get()).metadata().getComment())
                 .isEmpty();
 
         getFutureValue(setComment(TABLE, asQualifiedName(tableName), Optional.of("new comment")));
-        assertThat(metadata.getTableMetadata(testSession, metadata.getTableHandle(testSession, tableName).get()).getMetadata().getComment())
+        assertThat(metadata.getTableMetadata(testSession, metadata.getTableHandle(testSession, tableName).get()).metadata().getComment())
                 .isEqualTo(Optional.of("new comment"));
     }
 
@@ -58,7 +59,7 @@ public class TestCommentTask
     public void testCommentTableOnView()
     {
         QualifiedObjectName viewName = qualifiedObjectName("existing_view");
-        metadata.createView(testSession, viewName, someView(), false);
+        metadata.createView(testSession, viewName, someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(setComment(TABLE, asQualifiedName(viewName), Optional.of("new comment"))))
                 .hasErrorCode(TABLE_NOT_FOUND)
@@ -69,7 +70,7 @@ public class TestCommentTask
     public void testCommentTableOnMaterializedView()
     {
         QualifiedObjectName materializedViewName = qualifiedObjectName("existing_materialized_view");
-        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), false, false);
+        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), MATERIALIZED_VIEW_PROPERTIES, false, false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(setComment(TABLE, asQualifiedName(materializedViewName), Optional.of("new comment"))))
                 .hasErrorCode(TABLE_NOT_FOUND)
@@ -80,7 +81,7 @@ public class TestCommentTask
     public void testCommentView()
     {
         QualifiedObjectName viewName = qualifiedObjectName("existing_view");
-        metadata.createView(testSession, viewName, someView(), false);
+        metadata.createView(testSession, viewName, someView(), ImmutableMap.of(), false);
         assertThat(metadata.isView(testSession, viewName)).isTrue();
 
         getFutureValue(setComment(VIEW, asQualifiedName(viewName), Optional.of("new comment")));
@@ -102,7 +103,7 @@ public class TestCommentTask
     public void testCommentViewOnMaterializedView()
     {
         QualifiedObjectName materializedViewName = qualifiedObjectName("existing_materialized_view");
-        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), false, false);
+        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), MATERIALIZED_VIEW_PROPERTIES, false, false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(setComment(VIEW, asQualifiedName(materializedViewName), Optional.of("new comment"))))
                 .hasErrorCode(TABLE_NOT_FOUND)
@@ -118,7 +119,7 @@ public class TestCommentTask
 
         getFutureValue(setComment(COLUMN, columnName, Optional.of("new test column comment")));
         TableHandle tableHandle = metadata.getTableHandle(testSession, tableName).get();
-        ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(testSession, tableHandle).getMetadata();
+        ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(testSession, tableHandle).metadata();
         assertThat(Optional.ofNullable(connectorTableMetadata.getColumns().stream().filter(column -> "test".equals(column.getName())).collect(onlyElement()).getComment()))
                 .isEqualTo(Optional.of("new test column comment"));
     }
@@ -129,11 +130,11 @@ public class TestCommentTask
         QualifiedObjectName viewName = qualifiedObjectName("existing_view");
         QualifiedName columnName = qualifiedColumnName("existing_view", "test");
         QualifiedName missingColumnName = qualifiedColumnName("existing_view", "missing");
-        metadata.createView(testSession, viewName, someView(), false);
+        metadata.createView(testSession, viewName, someView(), ImmutableMap.of(), false);
         assertThat(metadata.isView(testSession, viewName)).isTrue();
 
         getFutureValue(setComment(COLUMN, columnName, Optional.of("new test column comment")));
-        assertThat(metadata.getView(testSession, viewName).get().getColumns().stream().filter(column -> "test".equals(column.getName())).collect(onlyElement()).getComment())
+        assertThat(metadata.getView(testSession, viewName).get().getColumns().stream().filter(column -> "test".equals(column.name())).collect(onlyElement()).comment())
                 .isEqualTo(Optional.of("new test column comment"));
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(setComment(COLUMN, missingColumnName, Optional.of("comment for missing column"))))
@@ -145,14 +146,14 @@ public class TestCommentTask
     public void testCommentMaterializedViewColumn()
     {
         QualifiedObjectName materializedViewName = qualifiedObjectName("existing_materialized_view");
-        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), false, false);
+        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), MATERIALIZED_VIEW_PROPERTIES, false, false);
         assertThat(metadata.isMaterializedView(testSession, materializedViewName)).isTrue();
 
         QualifiedName columnName = qualifiedColumnName("existing_materialized_view", "test");
         QualifiedName missingColumnName = qualifiedColumnName("existing_materialized_view", "missing");
 
         getFutureValue(setComment(COLUMN, columnName, Optional.of("new test column comment")));
-        assertThat(metadata.getMaterializedView(testSession, materializedViewName).get().getColumns().stream().filter(column -> "test".equals(column.getName())).collect(onlyElement()).getComment())
+        assertThat(metadata.getMaterializedView(testSession, materializedViewName).get().getColumns().stream().filter(column -> "test".equals(column.name())).collect(onlyElement()).comment())
                 .isEqualTo(Optional.of("new test column comment"));
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(setComment(COLUMN, missingColumnName, Optional.of("comment for missing column"))))

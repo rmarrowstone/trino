@@ -23,6 +23,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import javax.crypto.SecretKey;
 
@@ -35,7 +36,6 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
@@ -47,14 +47,13 @@ import static io.trino.server.security.jwt.JwtUtil.newJwtBuilder;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.Base64.getMimeDecoder;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestTrinoDriverAuth
 {
     private static final String TEST_CATALOG = "test_catalog";
@@ -70,7 +69,9 @@ public class TestTrinoDriverAuth
         Logging.initialize();
 
         URL resource = getClass().getClassLoader().getResource("33.privateKey");
-        assertNotNull(resource, "key directory not found");
+        assertThat(resource)
+                .describedAs("key directory not found")
+                .isNotNull();
         File keyDir = new File(resource.toURI()).getAbsoluteFile().getParentFile();
 
         defaultKey = hmacShaKeyFor(getMimeDecoder().decode(asCharSource(new File(keyDir, "default-key.key"), US_ASCII).read().getBytes(US_ASCII)));
@@ -88,7 +89,6 @@ public class TestTrinoDriverAuth
                 .build();
         server.installPlugin(new TpchPlugin());
         server.createCatalog(TEST_CATALOG, "tpch");
-        server.waitForNodeRefresh(Duration.ofSeconds(10));
     }
 
     @AfterAll
@@ -110,11 +110,11 @@ public class TestTrinoDriverAuth
 
         try (Connection connection = createConnection(ImmutableMap.of("accessToken", accessToken));
                 Statement statement = connection.createStatement()) {
-            assertTrue(statement.execute("SELECT 123"));
+            assertThat(statement.execute("SELECT 123")).isTrue();
             ResultSet rs = statement.getResultSet();
-            assertTrue(rs.next());
-            assertEquals(rs.getLong(1), 123);
-            assertFalse(rs.next());
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).isEqualTo(123);
+            assertThat(rs.next()).isFalse();
         }
     }
 
@@ -131,11 +131,11 @@ public class TestTrinoDriverAuth
 
         try (Connection connection = createConnection(ImmutableMap.of("accessToken", accessToken));
                 Statement statement = connection.createStatement()) {
-            assertTrue(statement.execute("SELECT 123"));
+            assertThat(statement.execute("SELECT 123")).isTrue();
             ResultSet rs = statement.getResultSet();
-            assertTrue(rs.next());
-            assertEquals(rs.getLong(1), 123);
-            assertFalse(rs.next());
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).isEqualTo(123);
+            assertThat(rs.next()).isFalse();
         }
     }
 
@@ -152,11 +152,11 @@ public class TestTrinoDriverAuth
 
         try (Connection connection = createConnection(ImmutableMap.of("accessToken", accessToken));
                 Statement statement = connection.createStatement()) {
-            assertTrue(statement.execute("SELECT 123"));
+            assertThat(statement.execute("SELECT 123")).isTrue();
             ResultSet rs = statement.getResultSet();
-            assertTrue(rs.next());
-            assertEquals(rs.getLong(1), 123);
-            assertFalse(rs.next());
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).isEqualTo(123);
+            assertThat(rs.next()).isFalse();
         }
     }
 
@@ -178,7 +178,7 @@ public class TestTrinoDriverAuth
             throws Exception
     {
         String accessToken = newJwtBuilder()
-                .setSubject("test")
+                .subject("test")
                 .compact();
 
         try (Connection connection = createConnection(ImmutableMap.of("accessToken", accessToken));
@@ -260,11 +260,11 @@ public class TestTrinoDriverAuth
 
         try (Connection connection = createConnection(ImmutableMap.of("accessToken", accessToken, "SSLVerification", "FULL"));
                 Statement statement = connection.createStatement()) {
-            assertTrue(statement.execute("SELECT 123"));
+            assertThat(statement.execute("SELECT 123")).isTrue();
             ResultSet rs = statement.getResultSet();
-            assertTrue(rs.next());
-            assertEquals(rs.getLong(1), 123);
-            assertFalse(rs.next());
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).isEqualTo(123);
+            assertThat(rs.next()).isFalse();
         }
     }
 
@@ -290,11 +290,11 @@ public class TestTrinoDriverAuth
 
         try (Connection connection = DriverManager.getConnection(url, properties);
                 Statement statement = connection.createStatement()) {
-            assertTrue(statement.execute("SELECT 123"));
+            assertThat(statement.execute("SELECT 123")).isTrue();
             ResultSet rs = statement.getResultSet();
-            assertTrue(rs.next());
-            assertEquals(rs.getLong(1), 123);
-            assertFalse(rs.next());
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).isEqualTo(123);
+            assertThat(rs.next()).isFalse();
         }
     }
 
@@ -381,11 +381,11 @@ public class TestTrinoDriverAuth
 
         try (Connection connection = createConnection(ImmutableMap.of("accessToken", accessToken, "SSLVerification", "CA"));
                 Statement statement = connection.createStatement()) {
-            assertTrue(statement.execute("SELECT 123"));
+            assertThat(statement.execute("SELECT 123")).isTrue();
             ResultSet rs = statement.getResultSet();
-            assertTrue(rs.next());
-            assertEquals(rs.getLong(1), 123);
-            assertFalse(rs.next());
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).isEqualTo(123);
+            assertThat(rs.next()).isFalse();
         }
     }
 
@@ -422,7 +422,7 @@ public class TestTrinoDriverAuth
     {
         assertThatThrownBy(() -> createConnection(ImmutableMap.of("SSLVerification", "NONE")))
                 .isInstanceOf(SQLException.class)
-                .hasMessage("Connection property SSLTrustStorePath cannot be set if SSLVerification is set to NONE");
+                .hasMessageContaining("Connection property SSLTrustStorePath cannot be set if SSLVerification is set to NONE");
     }
 
     @Test

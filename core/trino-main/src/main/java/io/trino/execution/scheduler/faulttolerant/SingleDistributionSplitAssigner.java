@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
@@ -48,7 +49,7 @@ class SingleDistributionSplitAssigner
         AssignmentResult.Builder assignment = AssignmentResult.builder();
         if (!partitionAdded) {
             partitionAdded = true;
-            assignment.addPartition(new Partition(0, new NodeRequirements(Optional.empty(), hostRequirement)));
+            assignment.addPartition(new Partition(0, new NodeRequirements(Optional.empty(), hostRequirement, hostRequirement.isEmpty())));
             assignment.setNoMorePartitions();
         }
         if (!splits.isEmpty()) {
@@ -82,10 +83,21 @@ class SingleDistributionSplitAssigner
         if (!partitionAdded) {
             partitionAdded = true;
             result
-                    .addPartition(new Partition(0, new NodeRequirements(Optional.empty(), hostRequirement)))
+                    .addPartition(new Partition(0, new NodeRequirements(Optional.empty(), hostRequirement, hostRequirement.isEmpty())))
                     .sealPartition(0)
                     .setNoMorePartitions();
         }
         return result.build();
+    }
+
+    @Override
+    public String toString()
+    {
+        return toStringHelper(this)
+                .add("hostRequirement", hostRequirement)
+                .add("allSources", allSources)
+                .add("partitionAdded", partitionAdded)
+                .add("completedSources", completedSources)
+                .toString();
     }
 }

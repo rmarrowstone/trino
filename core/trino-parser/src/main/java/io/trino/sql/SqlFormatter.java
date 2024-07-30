@@ -14,7 +14,6 @@
 package io.trino.sql;
 
 import com.google.common.base.Joiner;
-import com.google.common.base.Strings;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.trino.sql.tree.AddColumn;
 import io.trino.sql.tree.AliasedRelation;
@@ -50,6 +49,7 @@ import io.trino.sql.tree.DropCatalog;
 import io.trino.sql.tree.DropColumn;
 import io.trino.sql.tree.DropFunction;
 import io.trino.sql.tree.DropMaterializedView;
+import io.trino.sql.tree.DropNotNullConstraint;
 import io.trino.sql.tree.DropRole;
 import io.trino.sql.tree.DropSchema;
 import io.trino.sql.tree.DropTable;
@@ -68,6 +68,7 @@ import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.FetchFirst;
 import io.trino.sql.tree.FunctionSpecification;
 import io.trino.sql.tree.Grant;
+import io.trino.sql.tree.GrantObject;
 import io.trino.sql.tree.GrantRoles;
 import io.trino.sql.tree.GrantorSpecification;
 import io.trino.sql.tree.Identifier;
@@ -218,7 +219,7 @@ public final class SqlFormatter
         return ExpressionFormatter.formatExpression(identifier);
     }
 
-    static String formatName(QualifiedName name)
+    public static String formatName(QualifiedName name)
     {
         return name.getOriginalParts().stream()
                 .map(SqlFormatter::formatName)
@@ -333,7 +334,7 @@ public final class SqlFormatter
                 process(columns.get(i), indent + 1);
                 builder.append(",\n");
             }
-            process(columns.get(columns.size() - 1), indent + 1);
+            process(columns.getLast(), indent + 1);
             builder.append(")");
         }
 
@@ -372,14 +373,14 @@ public final class SqlFormatter
                     .append(" ")
                     .append(formatExpression(node.getType()))
                     .append(" FORMAT ")
-                    .append(node.getFormat().name());
+                    .append(node.getFormat().toString());
             node.getJsonPath().ifPresent(path ->
                     builder.append(" PATH ")
                             .append(formatExpression(path)));
             builder.append(switch (node.getWrapperBehavior()) {
                 case WITHOUT -> " WITHOUT ARRAY WRAPPER";
                 case CONDITIONAL -> " WITH CONDITIONAL ARRAY WRAPPER";
-                case UNCONDITIONAL -> (" WITH UNCONDITIONAL ARRAY WRAPPER");
+                case UNCONDITIONAL -> " WITH UNCONDITIONAL ARRAY WRAPPER";
             });
 
             if (node.getQuotesBehavior().isPresent()) {
@@ -443,7 +444,7 @@ public final class SqlFormatter
                         .append(" ");
             }
             builder.append("(");
-            process(node.getSiblings().get(node.getSiblings().size() - 1));
+            process(node.getSiblings().getLast());
             builder.append(")");
             return null;
         }
@@ -1162,6 +1163,8 @@ public final class SqlFormatter
                     .append(" SECURITY ")
                     .append(security.name()));
 
+            builder.append(formatPropertiesMultiLine(node.getProperties()));
+
             builder.append(" AS\n");
 
             process(node.getQuery(), indent);
@@ -1368,18 +1371,16 @@ public final class SqlFormatter
         @Override
         protected Void visitShowCreate(ShowCreate node, Integer indent)
         {
-            if (node.getType() == ShowCreate.Type.TABLE) {
-                builder.append("SHOW CREATE TABLE ")
-                        .append(formatName(node.getName()));
-            }
-            else if (node.getType() == ShowCreate.Type.VIEW) {
-                builder.append("SHOW CREATE VIEW ")
-                        .append(formatName(node.getName()));
-            }
-            else if (node.getType() == ShowCreate.Type.MATERIALIZED_VIEW) {
-                builder.append("SHOW CREATE MATERIALIZED VIEW ")
-                        .append(formatName(node.getName()));
-            }
+            builder.append("SHOW CREATE ")
+                    .append(switch (node.getType()) {
+                        case SCHEMA -> "SCHEMA";
+                        case TABLE -> "TABLE";
+                        case VIEW -> "VIEW";
+                        case MATERIALIZED_VIEW -> "MATERIALIZED VIEW";
+                        case FUNCTION -> "FUNCTION";
+                    })
+                    .append(" ")
+                    .append(formatName(node.getName()));
             return null;
         }
 
@@ -1627,31 +1628,18 @@ public final class SqlFormatter
             return null;
         }
 
-        private String formatPropertiesMultiLine(List<Property> properties)
+        private static String formatPropertiesMultiLine(List<Property> properties)
         {
             if (properties.isEmpty()) {
                 return "";
             }
 
-            String propertyList = properties.stream()
-                    .map(element -> INDENT +
-                            formatName(element.getName()) + " = " +
-                            (element.isSetToDefault() ? "DEFAULT" : formatExpression(element.getNonDefaultValue())))
-                    .collect(joining(",\n"));
-
-            return "\nWITH (\n" + propertyList + "\n)";
+            return properties.stream()
+                    .map(property -> INDENT + formatProperty(property))
+                    .collect(joining(",\n", "\nWITH (\n", "\n)"));
         }
 
-        private String formatPropertiesSingleLine(List<Property> properties)
-        {
-            if (properties.isEmpty()) {
-                return "";
-            }
-
-            return " WITH ( " + joinProperties(properties) + " )";
-        }
-
-        private String formatColumnDefinition(ColumnDefinition column)
+        private static String formatColumnDefinition(ColumnDefinition column)
         {
             StringBuilder builder = new StringBuilder()
                     .append(formatName(column.getName()))
@@ -1662,7 +1650,11 @@ public final class SqlFormatter
             column.getComment().ifPresent(comment -> builder
                     .append(" COMMENT ")
                     .append(formatStringLiteral(comment)));
-            builder.append(formatPropertiesSingleLine(column.getProperties()));
+            if (!column.getProperties().isEmpty()) {
+                builder.append(" WITH (")
+                        .append(joinProperties(column.getProperties()))
+                        .append(")");
+            }
             return builder.toString();
         }
 
@@ -1727,12 +1719,17 @@ public final class SqlFormatter
             return null;
         }
 
-        private String joinProperties(List<Property> properties)
+        private static String joinProperties(List<Property> properties)
         {
             return properties.stream()
-                    .map(element -> formatName(element.getName()) + " = " +
-                            (element.isSetToDefault() ? "DEFAULT" : formatExpression(element.getNonDefaultValue())))
+                    .map(Formatter::formatProperty)
                     .collect(joining(", "));
+        }
+
+        private static String formatProperty(Property property)
+        {
+            return formatName(property.getName()) + " = " +
+                    (property.isSetToDefault() ? "DEFAULT" : formatExpression(property.getNonDefaultValue()));
         }
 
         @Override
@@ -1847,6 +1844,21 @@ public final class SqlFormatter
                     .append(formatName(node.getColumnName()))
                     .append(" SET DATA TYPE ")
                     .append(node.getType().toString());
+
+            return null;
+        }
+
+        @Override
+        protected Void visitDropNotNullConstraint(DropNotNullConstraint node, Integer context)
+        {
+            builder.append("ALTER TABLE ");
+            if (node.isTableExists()) {
+                builder.append("IF EXISTS ");
+            }
+            builder.append(formatName(node.getTable()))
+                    .append(" ALTER COLUMN ")
+                    .append(formatName(node.getColumn()))
+                    .append(" DROP NOT NULL");
 
             return null;
         }
@@ -2132,15 +2144,16 @@ public final class SqlFormatter
         {
             builder.append("GRANT ");
 
-            builder.append(node.getPrivileges()
-                    .map(privileges -> join(", ", privileges))
-                    .orElse("ALL PRIVILEGES"));
-
-            builder.append(" ON ");
-            node.getType().ifPresent(type -> builder
-                    .append(type.name())
-                    .append(' '));
-            builder.append(formatName(node.getName()))
+            if (node.getPrivileges().isEmpty()) {
+                builder.append("ALL PRIVILEGES");
+            }
+            else {
+                builder.append(node.getPrivileges()
+                        .map(privileges -> join(", ", privileges))
+                        .orElseThrow());
+            }
+            builder.append(" ON ")
+                    .append(formatGrantScope(node.getGrantObject()))
                     .append(" TO ")
                     .append(formatPrincipal(node.getGrantee()));
             if (node.isWithGrantOption()) {
@@ -2162,12 +2175,8 @@ public final class SqlFormatter
                 builder.append("ALL PRIVILEGES");
             }
 
-            builder.append(" ON ");
-            if (node.getType().isPresent()) {
-                builder.append(node.getType().get().name());
-                builder.append(" ");
-            }
-            builder.append(formatName(node.getName()))
+            builder.append(" ON ")
+                    .append(formatGrantScope(node.getGrantObject()))
                     .append(" TO ")
                     .append(formatPrincipal(node.getGrantee()));
 
@@ -2183,15 +2192,17 @@ public final class SqlFormatter
                 builder.append("GRANT OPTION FOR ");
             }
 
-            builder.append(node.getPrivileges()
-                    .map(privileges -> join(", ", privileges))
-                    .orElse("ALL PRIVILEGES"));
+            if (node.getPrivileges().isEmpty()) {
+                builder.append("ALL PRIVILEGES");
+            }
+            else {
+                builder.append(node.getPrivileges()
+                        .map(privileges -> join(", ", privileges))
+                        .orElseThrow());
+            }
 
-            builder.append(" ON ");
-            node.getType().ifPresent(type -> builder
-                    .append(type.name())
-                    .append(' '));
-            builder.append(formatName(node.getName()))
+            builder.append(" ON ")
+                    .append(formatGrantScope(node.getGrantObject()))
                     .append(" FROM ")
                     .append(formatPrincipal(node.getGrantee()));
 
@@ -2203,13 +2214,8 @@ public final class SqlFormatter
         {
             builder.append("SHOW GRANTS ");
 
-            node.getTableName().ifPresent(tableName -> {
-                builder.append("ON ");
-                if (node.getTable()) {
-                    builder.append("TABLE ");
-                }
-                builder.append(formatName(tableName));
-            });
+            node.getGrantObject().ifPresent(scope -> builder.append("ON ")
+                    .append(formatGrantScope(scope)));
 
             return null;
         }
@@ -2584,7 +2590,7 @@ public final class SqlFormatter
 
         private static String indentString(int indent)
         {
-            return Strings.repeat(INDENT, indent);
+            return INDENT.repeat(indent);
         }
 
         private void formatDefinitionList(List<String> elements, int indent)
@@ -2600,7 +2606,7 @@ public final class SqlFormatter
                     append(indent, elements.get(i))
                             .append(",\n");
                 }
-                append(indent, elements.get(elements.size() - 1))
+                append(indent, elements.getLast())
                         .append("\n");
             }
         }
@@ -2608,7 +2614,7 @@ public final class SqlFormatter
 
     private static void appendAliasColumns(Formatter.SqlBuilder builder, List<Identifier> columns)
     {
-        if ((columns != null) && (!columns.isEmpty())) {
+        if ((columns != null) && !columns.isEmpty()) {
             String formattedColumns = columns.stream()
                     .map(SqlFormatter::formatName)
                     .collect(joining(", "));
@@ -2617,5 +2623,12 @@ public final class SqlFormatter
                     .append(formattedColumns)
                     .append(')');
         }
+    }
+
+    private static String formatGrantScope(GrantObject grantObject)
+    {
+        return String.format("%s%s",
+                grantObject.getEntityKind().isPresent() ? grantObject.getEntityKind().get() + " " : "",
+                formatName(grantObject.getName()));
     }
 }

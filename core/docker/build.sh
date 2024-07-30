@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -xeuo pipefail
 
 usage() {
     cat <<EOF 1>&2
@@ -10,16 +10,33 @@ Builds the Trino Docker image
 -h       Display help
 -a       Build the specified comma-separated architectures, defaults to amd64,arm64,ppc64le
 -r       Build the specified Trino release version, downloads all required artifacts
+-j       Build the Trino release with specified JDK distribution
 EOF
 }
+
+# Retrieve the script directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+cd "${SCRIPT_DIR}" || exit 2
+
+SOURCE_DIR="${SCRIPT_DIR}/../.."
 
 ARCHITECTURES=(amd64 arm64 ppc64le)
 TRINO_VERSION=
 
-while getopts ":a:h:r:" o; do
+JDK_RELEASE=$(cat "${SOURCE_DIR}/core/jdk/current")
+JDKS_PATH="${SOURCE_DIR}/core/jdk"
+
+while getopts ":a:h:r:j:" o; do
     case "${o}" in
         a)
-            IFS=, read -ra ARCHITECTURES <<< "$OPTARG"
+            IFS=, read -ra ARCH_ARG <<< "$OPTARG"
+            for arch in "${ARCH_ARG[@]}"; do
+                if echo "${ARCHITECTURES[@]}" | grep -v -w "$arch" &>/dev/null; then
+                    usage
+                    exit 0
+                fi
+            done
+            ARCHITECTURES=("${ARCH_ARG[@]}")
             ;;
         r)
             TRINO_VERSION=${OPTARG}
@@ -27,6 +44,9 @@ while getopts ":a:h:r:" o; do
         h)
             usage
             exit 0
+            ;;
+        j)
+            JDK_RELEASE="${OPTARG}"
             ;;
         *)
             usage
@@ -36,43 +56,30 @@ while getopts ":a:h:r:" o; do
 done
 shift $((OPTIND - 1))
 
-SOURCE_DIR="../.."
-
-function temurin_jdk_link() {
-  JDK_VERSION="${1}"
-  ARCH="${2}"
-
-  versionsUrl="https://api.adoptium.net/v3/info/release_names?heap_size=normal&image_type=jdk&lts=true&os=linux&page=0&page_size=20&project=jdk&release_type=ga&semver=false&sort_method=DEFAULT&sort_order=ASC&vendor=eclipse&version=%28${JDK_VERSION}%2C%5D"
-  if ! result=$(curl -fLs "$versionsUrl" -H 'accept: application/json'); then
-    echo >&2 "Failed to fetch release names for JDK version [${JDK_VERSION}, ) from Temurin API : $result"
-    exit 1
-  fi
-
-  if ! RELEASE_NAME=$(echo "$result" | jq -er '.releases[]' | grep "${JDK_VERSION}" | head -n 1); then
-    echo >&2 "Failed to determine release name: ${RELEASE_NAME}"
-    exit 1
-  fi
-
-  case "${ARCH}" in
-    arm64)
-      echo "https://api.adoptium.net/v3/binary/version/${RELEASE_NAME}/linux/aarch64/jdk/hotspot/normal/eclipse?project=jdk"
-    ;;
-    amd64)
-      echo "https://api.adoptium.net/v3/binary/version/${RELEASE_NAME}/linux/x64/jdk/hotspot/normal/eclipse?project=jdk"
-    ;;
-    ppc64le)
-      echo "https://api.adoptium.net/v3/binary/version/${RELEASE_NAME}/linux/ppc64le/jdk/hotspot/normal/eclipse?project=jdk"
-    ;;
-  *)
-    echo "${ARCH} is not supported for Docker image"
-    exit 1
-    ;;
-  esac
+function prop {
+    grep "^${1}=" "${2}" | cut -d'=' -f2-
 }
 
-# Retrieve the script directory.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-cd "${SCRIPT_DIR}" || exit 2
+function check_environment() {
+    if ! command -v jq &> /dev/null; then
+        echo >&2 "Please install jq"
+        exit 1
+    fi
+}
+
+function jdk_download_link() {
+  local RELEASE_PATH="${1}"
+  local ARCH="${2}"
+
+  if [ -f "${RELEASE_PATH}/${ARCH}" ]; then
+    prop "distributionUrl" "${RELEASE_PATH}/${ARCH}"
+  else
+     echo "${ARCH} is not supported for JDK release ${RELEASE_PATH}"
+     exit 1
+  fi
+}
+
+check_environment
 
 if [ -n "$TRINO_VERSION" ]; then
     echo "🎣 Downloading server and client artifacts for release version ${TRINO_VERSION}"
@@ -100,16 +107,15 @@ cp -R bin "${WORK_DIR}/trino-server-${TRINO_VERSION}"
 cp -R default "${WORK_DIR}/"
 
 TAG_PREFIX="trino:${TRINO_VERSION}"
-JDK_VERSION=$(cat "${SOURCE_DIR}/.java-version")
 
 for arch in "${ARCHITECTURES[@]}"; do
-    echo "🫙  Building the image for $arch with JDK ${JDK_VERSION}"
+    echo "🫙  Building the image for $arch with JDK ${JDK_RELEASE}"
     docker build \
         "${WORK_DIR}" \
         --progress=plain \
         --pull \
-        --build-arg JDK_VERSION="${JDK_VERSION}" \
-        --build-arg JDK_DOWNLOAD_LINK="$(temurin_jdk_link "${JDK_VERSION}" "${arch}")" \
+        --build-arg JDK_VERSION="${JDK_RELEASE}" \
+        --build-arg JDK_DOWNLOAD_LINK="$(jdk_download_link "${JDKS_PATH}/${JDK_RELEASE}" "${arch}")" \
         --platform "linux/$arch" \
         -f Dockerfile \
         -t "${TAG_PREFIX}-$arch" \
@@ -123,9 +129,6 @@ echo "🏃 Testing built images"
 source container-test.sh
 
 for arch in "${ARCHITECTURES[@]}"; do
-    # TODO: remove when https://github.com/multiarch/qemu-user-static/issues/128 is fixed
-    if [[ "$arch" != "ppc64le" ]]; then
-        test_container "${TAG_PREFIX}-$arch" "linux/$arch"
-    fi
+    test_container "${TAG_PREFIX}-$arch" "linux/$arch"
     docker image inspect -f '🚀 Built {{.RepoTags}} {{.Id}}' "${TAG_PREFIX}-$arch"
 done

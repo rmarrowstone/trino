@@ -14,6 +14,7 @@
 package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.QualifiedObjectName;
@@ -36,7 +37,7 @@ public class TestDropMaterializedViewTask
     public void testDropExistingMaterializedView()
     {
         QualifiedObjectName viewName = qualifiedObjectName("existing_materialized_view");
-        metadata.createMaterializedView(testSession, viewName, someMaterializedView(), false, false);
+        metadata.createMaterializedView(testSession, viewName, someMaterializedView(), MATERIALIZED_VIEW_PROPERTIES, false, false);
         assertThat(metadata.isMaterializedView(testSession, viewName)).isTrue();
 
         getFutureValue(executeDropMaterializedView(asQualifiedName(viewName), false));
@@ -88,7 +89,7 @@ public class TestDropMaterializedViewTask
     public void testDropMaterializedViewOnView()
     {
         QualifiedName viewName = qualifiedName("existing_view");
-        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), false);
+        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropMaterializedView(viewName, false)))
                 .hasErrorCode(GENERIC_USER_ERROR)
@@ -99,7 +100,7 @@ public class TestDropMaterializedViewTask
     public void testDropMaterializedViewOnViewIfExists()
     {
         QualifiedName viewName = qualifiedName("existing_view");
-        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), false);
+        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropMaterializedView(viewName, false)))
                 .hasErrorCode(GENERIC_USER_ERROR)

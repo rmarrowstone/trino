@@ -15,6 +15,7 @@ package io.trino.client;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
@@ -46,6 +47,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
@@ -82,7 +84,7 @@ class StatementClientV1
     private final AtomicReference<QueryResults> currentResults = new AtomicReference<>();
     private final AtomicReference<String> setCatalog = new AtomicReference<>();
     private final AtomicReference<String> setSchema = new AtomicReference<>();
-    private final AtomicReference<String> setPath = new AtomicReference<>();
+    private final AtomicReference<List<String>> setPath = new AtomicReference<>();
     private final AtomicReference<String> setAuthorizationUser = new AtomicReference<>();
     private final AtomicBoolean resetAuthorizationUser = new AtomicBoolean();
     private final Map<String, String> setSessionProperties = new ConcurrentHashMap<>();
@@ -126,14 +128,9 @@ class StatementClientV1
 
         Request request = buildQueryRequest(session, query);
 
-        // Always materialize the first response to avoid losing the response body if the initial response parsing fails
-        JsonResponse<QueryResults> response = JsonResponse.execute(QUERY_RESULTS_CODEC, httpCallFactory, request, OptionalLong.empty());
-        if ((response.getStatusCode() != HTTP_OK) || !response.hasValue()) {
-            state.compareAndSet(State.RUNNING, State.CLIENT_ERROR);
-            throw requestFailedException("starting query", request, response);
-        }
-
-        processResponse(response.getHeaders(), response.getValue());
+        // Pass empty as materializedJsonSizeLimit to always materialize the first response
+        // to avoid losing the response body if the initial response parsing fails
+        executeRequest(request, "starting query", OptionalLong.empty(), this::isTransient);
     }
 
     private Request buildQueryRequest(ClientSession session, String query)
@@ -145,7 +142,7 @@ class StatementClientV1
         url = url.newBuilder().encodedPath("/v1/statement").build();
 
         Request.Builder builder = prepareRequest(url)
-                .post(RequestBody.create(MEDIA_TYPE_TEXT, query));
+                .post(RequestBody.create(query, MEDIA_TYPE_TEXT));
 
         if (session.getSource() != null) {
             builder.addHeader(TRINO_HEADERS.requestSource(), session.getSource());
@@ -161,8 +158,8 @@ class StatementClientV1
         }
         session.getCatalog().ifPresent(value -> builder.addHeader(TRINO_HEADERS.requestCatalog(), value));
         session.getSchema().ifPresent(value -> builder.addHeader(TRINO_HEADERS.requestSchema(), value));
-        if (session.getPath() != null) {
-            builder.addHeader(TRINO_HEADERS.requestPath(), session.getPath());
+        if (session.getPath() != null && !session.getPath().isEmpty()) {
+            builder.addHeader(TRINO_HEADERS.requestPath(), Joiner.on(",").join(session.getPath()));
         }
         builder.addHeader(TRINO_HEADERS.requestTimeZone(), session.getTimeZone().getId());
         if (session.getLocale() != null) {
@@ -276,7 +273,7 @@ class StatementClientV1
     }
 
     @Override
-    public Optional<String> getSetPath()
+    public Optional<List<String>> getSetPath()
     {
         return Optional.ofNullable(setPath.get());
     }
@@ -363,7 +360,11 @@ class StatementClientV1
         }
 
         Request request = prepareRequest(HttpUrl.get(nextUri)).build();
+        return executeRequest(request, "fetching next", OptionalLong.of(MAX_MATERIALIZED_JSON_RESPONSE_SIZE), (e) -> true);
+    }
 
+    private boolean executeRequest(Request request, String taskName, OptionalLong materializedJsonSizeLimit, Function<Exception, Boolean> isRetryable)
+    {
         Exception cause = null;
         long start = System.nanoTime();
         long attempts = 0;
@@ -398,9 +399,12 @@ class StatementClientV1
 
             JsonResponse<QueryResults> response;
             try {
-                response = JsonResponse.execute(QUERY_RESULTS_CODEC, httpCallFactory, request, OptionalLong.of(MAX_MATERIALIZED_JSON_RESPONSE_SIZE));
+                response = JsonResponse.execute(QUERY_RESULTS_CODEC, httpCallFactory, request, materializedJsonSizeLimit);
             }
             catch (RuntimeException e) {
+                if (!isRetryable.apply(e)) {
+                    throw e;
+                }
                 cause = e;
                 continue;
             }
@@ -408,16 +412,16 @@ class StatementClientV1
                 cause = response.getException();
                 continue;
             }
-
-            if ((response.getStatusCode() == HTTP_OK) && response.hasValue()) {
-                processResponse(response.getHeaders(), response.getValue());
-                return true;
+            if (response.getStatusCode() != HTTP_OK || !response.hasValue()) {
+                if (!shouldRetry(response.getStatusCode())) {
+                    state.compareAndSet(State.RUNNING, State.CLIENT_ERROR);
+                    throw requestFailedException(taskName, request, response);
+                }
+                continue;
             }
 
-            if (!shouldRetry(response.getStatusCode())) {
-                state.compareAndSet(State.RUNNING, State.CLIENT_ERROR);
-                throw requestFailedException("fetching next", request, response);
-            }
+            processResponse(response.getHeaders(), response.getValue());
+            return true;
         }
     }
 
@@ -433,7 +437,7 @@ class StatementClientV1
     {
         setCatalog.set(headers.get(TRINO_HEADERS.responseSetCatalog()));
         setSchema.set(headers.get(TRINO_HEADERS.responseSetSchema()));
-        setPath.set(headers.get(TRINO_HEADERS.responseSetPath()));
+        setPath.set(safeSplitToList(headers.get(TRINO_HEADERS.responseSetPath())));
 
         String setAuthorizationUser = headers.get(TRINO_HEADERS.responseSetAuthorizationUser());
         if (setAuthorizationUser != null) {
@@ -482,6 +486,14 @@ class StatementClientV1
         }
 
         currentResults.set(results);
+    }
+
+    private List<String> safeSplitToList(String value)
+    {
+        if (value == null || value.isEmpty()) {
+            return ImmutableList.of();
+        }
+        return Splitter.on(',').trimResults().splitToList(value);
     }
 
     private RuntimeException requestFailedException(String task, Request request, JsonResponse<QueryResults> response)

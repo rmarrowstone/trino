@@ -14,11 +14,13 @@
 package io.trino.operator;
 
 import com.google.common.base.Throwables;
+import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.DictionaryBlock;
+import io.trino.spi.block.LazyBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.block.ValueBlock;
 import io.trino.spi.predicate.Domain;
@@ -72,8 +74,8 @@ public class JoinDomainBuilder
     private final MethodHandle hashFlat;
     private final MethodHandle hashBlock;
 
-    private final MethodHandle distinctFlatFlat;
-    private final MethodHandle distinctFlatBlock;
+    private final MethodHandle identicalFlatFlat;
+    private final MethodHandle identicalFlatBlock;
 
     private final MethodHandle compareFlatFlat;
     private final MethodHandle compareBlockBlock;
@@ -123,8 +125,8 @@ public class JoinDomainBuilder
 
         this.hashFlat = typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, FLAT));
         this.hashBlock = typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, VALUE_BLOCK_POSITION_NOT_NULL));
-        this.distinctFlatFlat = typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, FLAT));
-        this.distinctFlatBlock = typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, VALUE_BLOCK_POSITION_NOT_NULL));
+        this.identicalFlatFlat = typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, FLAT));
+        this.identicalFlatBlock = typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, VALUE_BLOCK_POSITION_NOT_NULL));
         if (collectMinMax) {
             this.compareFlatFlat = typeOperators.getComparisonUnorderedLastOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, FLAT));
             this.compareBlockBlock = typeOperators.getComparisonUnorderedLastOperator(type, simpleConvention(FAIL_ON_NULL, VALUE_BLOCK_POSITION_NOT_NULL, VALUE_BLOCK_POSITION_NOT_NULL));
@@ -162,22 +164,20 @@ public class JoinDomainBuilder
     {
         block = block.getLoadedBlock();
         if (collectDistinctValues) {
-            if (block instanceof ValueBlock valueBlock) {
-                for (int position = 0; position < block.getPositionCount(); position++) {
-                    add(valueBlock, position);
+            switch (block) {
+                case ValueBlock valueBlock -> {
+                    for (int position = 0; position < block.getPositionCount(); position++) {
+                        add(valueBlock, position);
+                    }
                 }
-            }
-            else if (block instanceof RunLengthEncodedBlock rleBlock) {
-                add(rleBlock.getValue(), 0);
-            }
-            else if (block instanceof DictionaryBlock dictionaryBlock) {
-                ValueBlock dictionary = dictionaryBlock.getDictionary();
-                for (int i = 0; i < dictionaryBlock.getPositionCount(); i++) {
-                    add(dictionary, dictionaryBlock.getId(i));
+                case RunLengthEncodedBlock rleBlock -> add(rleBlock.getValue(), 0);
+                case DictionaryBlock dictionaryBlock -> {
+                    ValueBlock dictionary = dictionaryBlock.getDictionary();
+                    for (int i = 0; i < dictionaryBlock.getPositionCount(); i++) {
+                        add(dictionary, dictionaryBlock.getId(i));
+                    }
                 }
-            }
-            else {
-                throw new IllegalArgumentException("Unsupported block type: " + block.getClass().getSimpleName());
+                case LazyBlock _ -> throw new VerifyException("Did not expect LazyBlock after loading " + block.getClass().getSimpleName());
             }
 
             // if the distinct size is too large, fall back to min max, and drop the distinct values
@@ -354,7 +354,7 @@ public class JoinDomainBuilder
         while (controlMatches != 0) {
             int slot = Long.numberOfTrailingZeros(controlMatches) >>> 3;
             int bucket = bucket(vectorStartBucket + slot);
-            if (valueNotDistinctFrom(bucket, otherValues, otherVariableWidthData, position)) {
+            if (valueIdentical(bucket, otherValues, otherVariableWidthData, position)) {
                 return bucket;
             }
 
@@ -368,7 +368,7 @@ public class JoinDomainBuilder
         long controlMatches = match(controlVector, repeated);
         while (controlMatches != 0) {
             int bucket = bucket(vectorStartBucket + (Long.numberOfTrailingZeros(controlMatches) >>> 3));
-            if (valueNotDistinctFrom(bucket, block, position)) {
+            if (valueIdentical(bucket, block, position)) {
                 return bucket;
             }
 
@@ -569,7 +569,7 @@ public class JoinDomainBuilder
         }
     }
 
-    private boolean valueNotDistinctFrom(int leftPosition, ValueBlock right, int rightPosition)
+    private boolean valueIdentical(int leftPosition, ValueBlock right, int rightPosition)
     {
         byte[] leftFixedRecordChunk = distinctRecords;
         int leftRecordOffset = getRecordOffset(leftPosition);
@@ -579,7 +579,7 @@ public class JoinDomainBuilder
         }
 
         try {
-            return !(boolean) distinctFlatBlock.invokeExact(
+            return (boolean) identicalFlatBlock.invokeExact(
                     leftFixedRecordChunk,
                     leftRecordOffset + distinctRecordValueOffset,
                     leftVariableWidthChunk,
@@ -592,7 +592,7 @@ public class JoinDomainBuilder
         }
     }
 
-    private boolean valueNotDistinctFrom(int leftPosition, byte[] rightValues, VariableWidthData rightVariableWidthData, int rightPosition)
+    private boolean valueIdentical(int leftPosition, byte[] rightValues, VariableWidthData rightVariableWidthData, int rightPosition)
     {
         byte[] leftFixedRecordChunk = distinctRecords;
         int leftRecordOffset = getRecordOffset(leftPosition);
@@ -609,7 +609,7 @@ public class JoinDomainBuilder
         }
 
         try {
-            return !(boolean) distinctFlatFlat.invokeExact(
+            return (boolean) identicalFlatFlat.invokeExact(
                     leftFixedRecordChunk,
                     leftRecordOffset + distinctRecordValueOffset,
                     leftVariableWidthChunk,

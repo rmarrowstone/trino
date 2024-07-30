@@ -18,7 +18,6 @@ newer. Older versions typically work, but only a subset is regularly tested.
 Versions before 350 are not supported.
 
 (cli-installation)=
-
 ## Installation
 
 Download {maven_download}`cli`, rename it to `trino`, make it executable with
@@ -170,6 +169,10 @@ mode:
     selected set of options.
 * - `--no-progress`
   - Do not show query processing progress.
+* - `--path`
+  - Set the default [SQL path](/sql/set-path) for the session. Useful for
+    setting a catalog and schema location for [catalog
+    routines](routine-catalog).
 * - `--password`
   - Prompts for a password. Use if your Trino server requires password
     authentication. You can set the `TRINO_PASSWORD` environment variable with
@@ -180,9 +183,10 @@ mode:
     with [](/sql/use).
 * - `--server`
   - The HTTP/HTTPS address and port of the Trino coordinator. The port must be
-    set to the port the Trino coordinator is listening for connections on. Trino
-    server location defaults to `http://localhost:8080`. Can only be set if URL
-    is not specified.
+    set to the port the Trino coordinator is listening for connections on. Port
+    80 for HTTP and Port 443 for HTTPS can be omitted. Trino server location
+    defaults to `http://localhost:8080`. Can only be set if URL is not
+    specified.
 * - `--session`
   - Sets one or more [session properties](session-properties-definition).
     Property can be used multiple times with the format
@@ -214,7 +218,6 @@ to find out URL parameter names. For example:
 ```
 
 (cli-tls)=
-
 ## TLS/HTTPS
 
 Trino is typically available with an HTTPS URL. This means that all network
@@ -254,6 +257,11 @@ certificate usage:
   - Determined by the keystore file format. The default keystore type is JKS.
     This advanced option is only necessary if you use a custom Java Cryptography
     Architecture (JCA) provider implementation.
+* - `--use-system-keystore`
+  - Use a client certificate obtained from the system keystore of the operating
+    system. Windows and macOS are supported. For other operating systems, the
+    default Java keystore is used. The keystore type can be overriden using
+    `--keystore-type`.
 * - `--truststore-password`
   - The password for the truststore. This must match the password you specified
     when creating the truststore.
@@ -271,14 +279,12 @@ certificate usage:
 :::
 
 (cli-authentication)=
-
 ## Authentication
 
 The Trino CLI supports many {doc}`/security/authentication-types` detailed in
 the following sections:
 
 (cli-username-password-auth)=
-
 ### Username and password authentication
 
 Username and password authentication is typically configured in a cluster using
@@ -308,7 +314,6 @@ to provide a password to connect with the CLI.
 ```
 
 (cli-external-sso-auth)=
-
 ### External authentication - SSO
 
 Use the `--external-authentication` option for browser-based SSO
@@ -332,7 +337,6 @@ The detailed behavior is as follows:
 - Expired tokens force you to log in again.
 
 (cli-certificate-auth)=
-
 ### Certificate authentication
 
 Use the following CLI arguments to connect to a cluster that uses
@@ -357,14 +361,12 @@ authentication with the CLI; instead, they control the client's trust of the
 server's certificate.
 
 (cli-jwt-auth)=
-
 ### JWT authentication
 
 To access a Trino cluster configured to use {doc}`/security/jwt`, use the
 `--access-token=<token>` option to pass a JWT to the server.
 
 (cli-kerberos-auth)=
-
 ### Kerberos authentication
 
 The Trino CLI can connect to a Trino cluster that has {doc}`/security/kerberos`
@@ -415,7 +417,6 @@ The following table lists the available options for Kerberos authentication:
 :::
 
 (cli-kerberos-debug)=
-
 #### Additional Kerberos debugging information
 
 You can enable additional Kerberos debugging information for the Trino CLI
@@ -450,7 +451,6 @@ such as `more` or [pspg](https://github.com/okbob/pspg),
 or it can be set to an empty value to completely disable pagination.
 
 (cli-history)=
-
 ## History
 
 The CLI keeps a history of your previously used commands. You can access your
@@ -600,7 +600,6 @@ SELECT nationkey, name, region FROM tpch.sf1.nation LIMIT 3
 ```
 
 (cli-output-format)=
-
 ## Output formats
 
 The Trino CLI provides the options `--output-format`
@@ -645,7 +644,6 @@ and `CSV` in non-interactive mode.
 :::
 
 (cli-troubleshooting)=
-
 ## Troubleshooting
 
 If something goes wrong, you see an error message:

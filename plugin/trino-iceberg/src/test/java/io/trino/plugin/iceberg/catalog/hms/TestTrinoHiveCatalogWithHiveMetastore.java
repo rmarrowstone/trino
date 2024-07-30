@@ -25,7 +25,7 @@ import io.trino.hdfs.TrinoHdfsFileSystemStats;
 import io.trino.hdfs.authentication.NoHdfsAuthentication;
 import io.trino.hdfs.s3.HiveS3Config;
 import io.trino.hdfs.s3.TrinoS3ConfigurationInitializer;
-import io.trino.plugin.base.CatalogName;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.plugin.hive.TrinoViewHiveMetastore;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.plugin.hive.metastore.cache.CachingHiveMetastore;
@@ -33,14 +33,17 @@ import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.ThriftMetastore;
 import io.trino.plugin.hive.metastore.thrift.ThriftMetastoreConfig;
 import io.trino.plugin.hive.metastore.thrift.ThriftMetastoreFactory;
+import io.trino.plugin.iceberg.IcebergConfig;
 import io.trino.plugin.iceberg.IcebergSchemaProperties;
 import io.trino.plugin.iceberg.catalog.BaseTrinoCatalogTest;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.TestingTypeManager;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Map;
 import java.util.Optional;
@@ -49,26 +52,29 @@ import java.util.Set;
 import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
 import static io.trino.plugin.hive.containers.HiveHadoop.HIVE3_IMAGE;
-import static io.trino.plugin.hive.metastore.cache.CachingHiveMetastore.memoizeMetastore;
+import static io.trino.plugin.hive.metastore.cache.CachingHiveMetastore.createPerTransactionCache;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestTrinoHiveCatalogWithHiveMetastore
         extends BaseTrinoCatalogTest
 {
     private static final String bucketName = "test-hive-catalog-with-hms-" + randomNameSuffix();
 
+    private AutoCloseableCloser closer = AutoCloseableCloser.create();
     // Use MinIO for storage, since HDFS is hard to get working in a unit test
     private HiveMinioDataLake dataLake;
 
     @BeforeAll
     public void setUp()
     {
-        dataLake = new HiveMinioDataLake(bucketName, HIVE3_IMAGE);
+        dataLake = closer.register(new HiveMinioDataLake(bucketName, HIVE3_IMAGE));
         dataLake.start();
     }
 
@@ -76,10 +82,8 @@ public class TestTrinoHiveCatalogWithHiveMetastore
     public void tearDown()
             throws Exception
     {
-        if (dataLake != null) {
-            dataLake.stop();
-            dataLake = null;
-        }
+        dataLake = null;
+        closer.close();
     }
 
     @Override
@@ -104,8 +108,8 @@ public class TestTrinoHiveCatalogWithHiveMetastore
                         // Read timed out sometimes happens with the default timeout
                         .setReadTimeout(new Duration(1, MINUTES)))
                 .metastoreClient(dataLake.getHiveHadoop().getHiveMetastoreEndpoint())
-                .build();
-        CachingHiveMetastore metastore = memoizeMetastore(new BridgingHiveMetastore(thriftMetastore), 1000);
+                .build(closer::register);
+        CachingHiveMetastore metastore = createPerTransactionCache(new BridgingHiveMetastore(thriftMetastore), 1000);
         return new TrinoHiveCatalog(
                 new CatalogName("catalog"),
                 metastore,
@@ -129,7 +133,8 @@ public class TestTrinoHiveCatalogWithHiveMetastore
                 }),
                 useUniqueTableLocations,
                 false,
-                false);
+                false,
+                new IcebergConfig().isHideMaterializedViewStorageTable());
     }
 
     @Override

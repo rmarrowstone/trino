@@ -32,7 +32,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Streams.stream;
-import static io.trino.plugin.mariadb.MariaDbQueryRunner.createMariaDbQueryRunner;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.sql.TestTable.fromColumns;
 import static io.trino.tpch.TpchTable.ORDERS;
@@ -42,9 +41,6 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.withinPercentage;
 import static org.junit.jupiter.api.Assumptions.abort;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertNull;
 
 public abstract class BaseMariaDbTableStatisticsTest
         extends BaseJdbcTableStatisticsTest
@@ -70,11 +66,10 @@ public abstract class BaseMariaDbTableStatisticsTest
     {
         mariaDbServer = closeAfterClass(new TestingMariaDbServer(dockerImageName));
 
-        return createMariaDbQueryRunner(
-                mariaDbServer,
-                Map.of(),
-                Map.of("case-insensitive-name-matching", "true"),
-                List.of(ORDERS));
+        return MariaDbQueryRunner.builder(mariaDbServer)
+                .addConnectorProperty("case-insensitive-name-matching", "true")
+                .setInitialTables(List.of(ORDERS))
+                .build();
     }
 
     @Test
@@ -129,7 +124,7 @@ public abstract class BaseMariaDbTableStatisticsTest
                     .put("shippriority", 1)
                     .put("comment", varcharNdvToExpected.apply(14995))
                     .build());
-            assertThat(getTableCardinalityFromStats(statsResult)).isCloseTo(15000, withinPercentage(20));
+            assertThat(getTableCardinalityFromStats(statsResult)).isCloseTo(15000, withinPercentage(30));
         }
         finally {
             assertUpdate("DROP TABLE " + tableName);
@@ -161,17 +156,29 @@ public abstract class BaseMariaDbTableStatisticsTest
                 }
 
                 if ((columnName.equals("orderpriority") || columnName.equals("comment")) && varcharNdvToExpected.apply(2) == null) {
-                    assertNull(row.getField(2), "NDV for " + columnName);
-                    assertNull(row.getField(3), "null fraction for " + columnName);
+                    assertThat(row.getField(2))
+                            .describedAs("NDV for " + columnName)
+                            .isNull();
+                    assertThat(row.getField(3))
+                            .describedAs("null fraction for " + columnName)
+                            .isNull();
                 }
                 else {
-                    assertNotNull(row.getField(2), "NDV for " + columnName);
+                    assertThat(row.getField(2))
+                            .describedAs("NDV for " + columnName)
+                            .isNotNull();
                     assertThat((Double) row.getField(2)).as("NDV for " + columnName).isBetween(0.0, 2.0);
-                    assertEquals(row.getField(3), nullFractionToExpected.apply(1.0), "null fraction for " + columnName);
+                    assertThat(row.getField(3))
+                            .describedAs("null fraction for " + columnName)
+                            .isEqualTo(nullFractionToExpected.apply(1.0));
                 }
 
-                assertNull(row.getField(4), "min");
-                assertNull(row.getField(5), "max");
+                assertThat(row.getField(4))
+                        .describedAs("min")
+                        .isNull();
+                assertThat(row.getField(5))
+                        .describedAs("max")
+                        .isNull();
             }
             double cardinality = getTableCardinalityFromStats(statsResult);
             if (cardinality != 15.0) {
@@ -212,7 +219,7 @@ public abstract class BaseMariaDbTableStatisticsTest
                             .put("custkey", nullFractionToExpected.apply(1.0 / 3))
                             .put("orderpriority", nullFractionToExpected.apply(1.0 / 5))
                             .build());
-            assertThat(getTableCardinalityFromStats(statsResult)).isCloseTo(15000, withinPercentage(20));
+            assertThat(getTableCardinalityFromStats(statsResult)).isCloseTo(15000, withinPercentage(25));
         }
         finally {
             assertUpdate("DROP TABLE " + tableName);
@@ -359,7 +366,7 @@ public abstract class BaseMariaDbTableStatisticsTest
 
     protected void assertColumnStats(MaterializedResult statsResult, Map<String, Integer> columnNdvs, Map<String, Double> columnNullFractions)
     {
-        assertEquals(columnNdvs.keySet(), columnNullFractions.keySet());
+        assertThat(columnNdvs.keySet()).isEqualTo(columnNullFractions.keySet());
         List<String> reportedColumns = stream(statsResult)
                 .map(row -> row.getField(0)) // column name
                 .filter(Objects::nonNull)
@@ -390,7 +397,9 @@ public abstract class BaseMariaDbTableStatisticsTest
             AbstractDoubleAssert<?> ndvAssertion = assertThat(distinctCount).as("NDV for " + columnName);
             if (expectedNdv == null) {
                 ndvAssertion.isNull();
-                assertNull(nullsFraction, "null fraction for " + columnName);
+                assertThat(nullsFraction)
+                        .describedAs("null fraction for " + columnName)
+                        .isNull();
             }
             else {
                 ndvAssertion.isBetween(expectedNdv * 0.5, min(expectedNdv * 4.0, tableCardinality)); // [-50%, +300%] but no more than row count
@@ -405,21 +414,25 @@ public abstract class BaseMariaDbTableStatisticsTest
                 }
             }
 
-            assertNull(row.getField(4), "min");
-            assertNull(row.getField(5), "max");
+            assertThat(row.getField(4))
+                    .describedAs("min")
+                    .isNull();
+            assertThat(row.getField(5))
+                    .describedAs("max")
+                    .isNull();
         }
     }
 
     protected static Double getTableCardinalityFromStats(MaterializedResult statsResult)
     {
         MaterializedRow lastRow = statsResult.getMaterializedRows().get(statsResult.getRowCount() - 1);
-        assertNull(lastRow.getField(0));
-        assertNull(lastRow.getField(1));
-        assertNull(lastRow.getField(2));
-        assertNull(lastRow.getField(3));
-        assertNull(lastRow.getField(5));
-        assertNull(lastRow.getField(6));
-        assertEquals(lastRow.getFieldCount(), 7);
+        assertThat(lastRow.getField(0)).isNull();
+        assertThat(lastRow.getField(1)).isNull();
+        assertThat(lastRow.getField(2)).isNull();
+        assertThat(lastRow.getField(3)).isNull();
+        assertThat(lastRow.getField(5)).isNull();
+        assertThat(lastRow.getField(6)).isNull();
+        assertThat(lastRow.getFieldCount()).isEqualTo(7);
         return ((Double) lastRow.getField(4));
     }
 

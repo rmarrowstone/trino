@@ -14,10 +14,12 @@
 package io.trino.plugin.base.security;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.security.TableAccessControlRule.TablePrivilege;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.SchemaRoutineName;
@@ -31,12 +33,14 @@ import io.trino.spi.type.Type;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.base.security.TableAccessControlRule.TablePrivilege.DELETE;
 import static io.trino.plugin.base.security.TableAccessControlRule.TablePrivilege.GRANT_SELECT;
@@ -90,6 +94,7 @@ import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorizat
 import static io.trino.spi.security.AccessDeniedException.denySetTableProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denyShowColumns;
+import static io.trino.spi.security.AccessDeniedException.denyShowCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyShowFunctions;
@@ -254,7 +259,15 @@ public class FileBasedAccessControl
     }
 
     @Override
-    public Set<String> filterColumns(ConnectorSecurityContext context, SchemaTableName tableName, Set<String> columns)
+    public Map<SchemaTableName, Set<String>> filterColumns(ConnectorSecurityContext context, Map<SchemaTableName, Set<String>> tableColumns)
+    {
+        return tableColumns.entrySet().stream()
+                .collect(toImmutableMap(
+                        Entry::getKey,
+                        entry -> filterColumns(context, entry.getKey(), entry.getValue())));
+    }
+
+    private Set<String> filterColumns(ConnectorSecurityContext context, SchemaTableName tableName, Set<String> columns)
     {
         if (INFORMATION_SCHEMA_NAME.equals(tableName.getSchemaName())) {
             return columns;
@@ -278,13 +291,6 @@ public class FileBasedAccessControl
         return columns.stream()
                 .filter(column -> !restrictedColumns.contains(column))
                 .collect(toImmutableSet());
-    }
-
-    @Override
-    public Map<SchemaTableName, Set<String>> filterColumns(ConnectorSecurityContext context, Map<SchemaTableName, Set<String>> tableColumns)
-    {
-        // Default implementation is good enough. Explicit implementation is expected by the test though.
-        return ConnectorAccessControl.super.filterColumns(context, tableColumns);
     }
 
     @Override
@@ -694,6 +700,14 @@ public class FileBasedAccessControl
     }
 
     @Override
+    public void checkCanShowCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        if (!checkFunctionPermission(context, function, FunctionAccessControlRule::hasOwnership)) {
+            denyShowCreateFunction(function.getSchemaName());
+        }
+    }
+
+    @Override
     public List<ViewExpression> getRowFilters(ConnectorSecurityContext context, SchemaTableName tableName)
     {
         if (INFORMATION_SCHEMA_NAME.equals(tableName.getSchemaName())) {
@@ -733,6 +747,30 @@ public class FileBasedAccessControl
         }
 
         return masks.stream().findFirst();
+    }
+
+    @Override
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        if (INFORMATION_SCHEMA_NAME.equals(tableName.getSchemaName())) {
+            return ImmutableMap.of();
+        }
+
+        ConnectorIdentity identity = context.getIdentity();
+        try {
+            return columns.stream()
+                    .flatMap(columnSchema -> tableRules.stream()
+                            .filter(rule -> rule.matches(identity.getUser(), identity.getEnabledSystemRoles(), identity.getGroups(), tableName))
+                            .map(rule -> rule.getColumnMask(catalogName, tableName.getSchemaName(), columnSchema.getName()))
+                            .findFirst()
+                            .stream()
+                            .flatMap(Optional::stream)
+                            .map(viewExpression -> Map.entry(columnSchema, viewExpression)))
+                    .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+        }
+        catch (IllegalArgumentException exception) {
+            throw new TrinoException(INVALID_COLUMN_MASK, "Multiple column masks defined for the same column", exception);
+        }
     }
 
     private boolean canSetSessionProperty(ConnectorSecurityContext context, String property)

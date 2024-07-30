@@ -60,6 +60,7 @@ import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_BAD_WRITE;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getCompressionCodec;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getParquetWriterBlockSize;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getParquetWriterPageSize;
+import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getParquetWriterPageValueCount;
 import static io.trino.plugin.deltalake.DeltaLakeTypes.toParquetType;
 import static io.trino.plugin.hive.util.HiveUtil.escapePathName;
 import static java.lang.Math.min;
@@ -100,13 +101,15 @@ public abstract class AbstractDeltaLakePageSink
     private final DeltaLakeWriterStats stats;
     private final String trinoVersion;
     private final long targetMaxFileSize;
-
+    private final long idleWriterMinFileSize;
     private long writtenBytes;
     private long memoryUsage;
 
     private final List<Closeable> closedWriterRollbackActions = new ArrayList<>();
+    private final List<Boolean> activeWriters = new ArrayList<>();
     protected final ImmutableList.Builder<DataFileInfo> dataFileInfos = ImmutableList.builder();
     private final DeltaLakeParquetSchemaMapping parquetSchemaMapping;
+    private long currentOpenWriters;
 
     public AbstractDeltaLakePageSink(
             TypeOperators typeOperators,
@@ -190,6 +193,7 @@ public abstract class AbstractDeltaLakePageSink
 
         this.trinoVersion = requireNonNull(trinoVersion, "trinoVersion is null");
         this.targetMaxFileSize = DeltaLakeSessionProperties.getTargetMaxFileSize(session);
+        this.idleWriterMinFileSize = DeltaLakeSessionProperties.getIdleWriterMinFileSize(session);
     }
 
     protected abstract void processSynthesizedColumn(DeltaLakeColumnHandle column);
@@ -312,14 +316,31 @@ public abstract class AbstractDeltaLakePageSink
             }
 
             DeltaLakeWriter writer = writers.get(index);
+            verify(writer != null, "Expected writer at index %s", index);
 
             long currentWritten = writer.getWrittenBytes();
             long currentMemory = writer.getMemoryUsage();
 
             writer.appendRows(pageForWriter);
 
-            writtenBytes += (writer.getWrittenBytes() - currentWritten);
-            memoryUsage += (writer.getMemoryUsage() - currentMemory);
+            writtenBytes += writer.getWrittenBytes() - currentWritten;
+            memoryUsage += writer.getMemoryUsage() - currentMemory;
+            // Mark this writer as active (i.e. not idle)
+            activeWriters.set(index, true);
+        }
+    }
+
+    @Override
+    public void closeIdleWriters()
+    {
+        for (int writerIndex = 0; writerIndex < writers.size(); writerIndex++) {
+            DeltaLakeWriter writer = writers.get(writerIndex);
+            if (activeWriters.get(writerIndex) || writer == null || writer.getWrittenBytes() <= idleWriterMinFileSize) {
+                activeWriters.set(writerIndex, false);
+                continue;
+            }
+            LOG.debug("Closing writer %s with %s bytes written", writerIndex, writer.getWrittenBytes());
+            closeWriter(writerIndex);
         }
     }
 
@@ -327,13 +348,11 @@ public abstract class AbstractDeltaLakePageSink
     {
         Page partitionColumns = extractColumns(page, partitionColumnsInputIndex);
         int[] writerIndexes = pageIndexer.indexPage(partitionColumns);
-        if (pageIndexer.getMaxIndex() >= maxOpenWriters) {
-            throw new TrinoException(DELTA_LAKE_BAD_WRITE, format("Exceeded limit of %s open writers for partitions", maxOpenWriters));
-        }
 
         // expand writers list to new size
         while (writers.size() <= pageIndexer.getMaxIndex()) {
             writers.add(null);
+            activeWriters.add(false);
         }
         // create missing writers
         for (int position = 0; position < page.getPositionCount(); position++) {
@@ -371,10 +390,14 @@ public abstract class AbstractDeltaLakePageSink
                     getDataFileType());
 
             writers.set(writerIndex, writer);
+            currentOpenWriters++;
             memoryUsage += writer.getMemoryUsage();
         }
         verify(writers.size() == pageIndexer.getMaxIndex() + 1);
-        verify(!writers.contains(null));
+
+        if (currentOpenWriters > maxOpenWriters) {
+            throw new TrinoException(DELTA_LAKE_BAD_WRITE, format("Exceeded limit of %s open writers for partitions", maxOpenWriters));
+        }
 
         return writerIndexes;
     }
@@ -387,6 +410,9 @@ public abstract class AbstractDeltaLakePageSink
     protected void closeWriter(int writerIndex)
     {
         DeltaLakeWriter writer = writers.get(writerIndex);
+        if (writer == null) {
+            return;
+        }
 
         long currentWritten = writer.getWrittenBytes();
         long currentMemory = writer.getMemoryUsage();
@@ -397,6 +423,7 @@ public abstract class AbstractDeltaLakePageSink
         memoryUsage -= currentMemory;
 
         writers.set(writerIndex, null);
+        currentOpenWriters--;
 
         try {
             DataFileInfo dataFileInfo = writer.getDataFileInfo();
@@ -440,8 +467,10 @@ public abstract class AbstractDeltaLakePageSink
         ParquetWriterOptions parquetWriterOptions = ParquetWriterOptions.builder()
                 .setMaxBlockSize(getParquetWriterBlockSize(session))
                 .setMaxPageSize(getParquetWriterPageSize(session))
+                .setMaxPageValueCount(getParquetWriterPageValueCount(session))
                 .build();
-        CompressionCodec compressionCodec = getCompressionCodec(session).getParquetCompressionCodec();
+        CompressionCodec compressionCodec = getCompressionCodec(session).getParquetCompressionCodec()
+                .orElseThrow(); // validated on the session property level
 
         try {
             Closeable rollbackAction = () -> fileSystem.deleteFile(path);

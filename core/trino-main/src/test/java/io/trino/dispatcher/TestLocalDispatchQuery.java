@@ -24,7 +24,6 @@ import io.airlift.units.Duration;
 import io.opentelemetry.api.OpenTelemetry;
 import io.trino.Session;
 import io.trino.client.NodeVersion;
-import io.trino.connector.CatalogProperties;
 import io.trino.connector.ConnectorCatalogServiceProvider;
 import io.trino.connector.ConnectorServices;
 import io.trino.connector.ConnectorServicesProvider;
@@ -56,6 +55,7 @@ import io.trino.plugin.base.security.DefaultSystemAccessControl;
 import io.trino.security.AccessControlConfig;
 import io.trino.security.AccessControlManager;
 import io.trino.server.protocol.Slug;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
@@ -82,7 +82,7 @@ import static io.trino.sql.tree.SaveMode.FAIL;
 import static io.trino.testing.TestingEventListenerManager.emptyEventListenerManager;
 import static io.trino.transaction.InMemoryTransactionManager.createTestTransactionManager;
 import static java.util.concurrent.Executors.newCachedThreadPool;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestLocalDispatchQuery
 {
@@ -133,7 +133,10 @@ public class TestLocalDispatchQuery
                 metadata,
                 new FunctionManager(
                         new ConnectorCatalogServiceProvider<>("function provider", new NoConnectorServicesProvider(), ConnectorServices::getFunctionProvider),
-                        new GlobalFunctionCatalog(),
+                        new GlobalFunctionCatalog(
+                                () -> { throw new UnsupportedOperationException(); },
+                                () -> { throw new UnsupportedOperationException(); },
+                                () -> { throw new UnsupportedOperationException(); }),
                         LanguageFunctionProvider.DISABLED),
                 new QueryMonitorConfig());
         CreateTable createTable = new CreateTable(QualifiedName.of("table"), ImmutableList.of(), FAIL, ImmutableList.of(), Optional.empty());
@@ -152,7 +155,7 @@ public class TestLocalDispatchQuery
                 queryMonitor,
                 new TestClusterSizeMonitor(new InMemoryNodeManager(ImmutableSet.of()), new NodeSchedulerConfig()),
                 executor,
-                (queryExecution -> dataDefinitionExecution.start()));
+                queryExecution -> dataDefinitionExecution.start());
         queryStateMachine.addStateChangeListener(state -> {
             if (state.ordinal() >= QueryState.PLANNING.ordinal()) {
                 countDownLatch.countDown();
@@ -160,7 +163,7 @@ public class TestLocalDispatchQuery
         });
         localDispatchQuery.startWaitingForResources();
         countDownLatch.await();
-        assertTrue(localDispatchQuery.getDispatchInfo().getCoordinatorLocation().isPresent());
+        assertThat(localDispatchQuery.getDispatchInfo().getCoordinatorLocation().isPresent()).isTrue();
     }
 
     private static class NoConnectorServicesProvider

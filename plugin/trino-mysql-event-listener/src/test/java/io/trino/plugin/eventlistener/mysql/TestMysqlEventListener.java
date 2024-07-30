@@ -38,6 +38,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 import org.testcontainers.containers.MySQLContainer;
 
 import java.net.URI;
@@ -61,9 +62,11 @@ import static java.lang.String.format;
 import static java.time.Duration.ofMillis;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
-public class TestMysqlEventListener
+@Execution(CONCURRENT)
+final class TestMysqlEventListener
 {
     private static final QueryMetadata FULL_QUERY_METADATA = new QueryMetadata(
             "full_query",
@@ -120,6 +123,8 @@ public class TestMysqlEventListener
             Collections.emptyList(),
             130,
             true,
+            // not stored
+            Collections.emptyList(),
             // not stored
             Collections.emptyList(),
             // not stored
@@ -281,6 +286,8 @@ public class TestMysqlEventListener
             Collections.emptyList(),
             // not stored
             Collections.emptyList(),
+            // not stored
+            Collections.emptyList(),
             Collections.emptyList(),
             Collections.emptyList(),
             // not stored
@@ -332,9 +339,9 @@ public class TestMysqlEventListener
     private JsonCodecFactory jsonCodecFactory;
 
     @BeforeAll
-    public void setup()
+    void setup()
     {
-        mysqlContainer = new MySQLContainer<>("mysql:8.0.12");
+        mysqlContainer = new MySQLContainer<>("mysql:8.0.36");
         mysqlContainer.start();
         mysqlContainerUrl = getJdbcUrl(mysqlContainer);
         eventListener = new MysqlEventListenerFactory()
@@ -343,7 +350,7 @@ public class TestMysqlEventListener
     }
 
     @AfterAll
-    public void teardown()
+    void teardown()
     {
         if (mysqlContainer != null) {
             mysqlContainer.close();
@@ -363,7 +370,7 @@ public class TestMysqlEventListener
     }
 
     @Test
-    public void testFull()
+    void testFull()
             throws SQLException
     {
         eventListener.queryCompleted(FULL_QUERY_COMPLETED_EVENT);
@@ -447,7 +454,7 @@ public class TestMysqlEventListener
     }
 
     @Test
-    public void testMinimal()
+    void testMinimal()
             throws SQLException
     {
         eventListener.queryCompleted(MINIMAL_QUERY_COMPLETED_EVENT);

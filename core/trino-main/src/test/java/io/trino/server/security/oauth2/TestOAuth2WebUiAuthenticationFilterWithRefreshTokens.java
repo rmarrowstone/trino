@@ -22,7 +22,7 @@ import io.airlift.http.client.jetty.JettyHttpClient;
 import io.airlift.log.Level;
 import io.airlift.log.Logging;
 import io.trino.server.security.jwt.JwkService;
-import io.trino.server.security.jwt.JwkSigningKeyResolver;
+import io.trino.server.security.jwt.JwkSigningKeyLocator;
 import io.trino.server.testing.TestingTrinoServer;
 import io.trino.server.ui.OAuth2WebUiAuthenticationFilter;
 import io.trino.server.ui.WebUiModule;
@@ -30,9 +30,11 @@ import okhttp3.JavaNetCookieJar;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.net.CookieManager;
 import java.net.CookieStore;
@@ -48,8 +50,11 @@ import static io.trino.server.ui.OAuthIdTokenCookie.ID_TOKEN_COOKIE;
 import static jakarta.servlet.http.HttpServletResponse.SC_OK;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestOAuth2WebUiAuthenticationFilterWithRefreshTokens
 {
     protected static final Duration TTL_ACCESS_TOKEN_IN_SECONDS = Duration.ofSeconds(5);
@@ -66,7 +71,7 @@ public class TestOAuth2WebUiAuthenticationFilterWithRefreshTokens
     private URI serverUri;
     private URI uiUri;
 
-    @BeforeClass
+    @BeforeAll
     public void setup()
             throws Exception
     {
@@ -110,7 +115,6 @@ public class TestOAuth2WebUiAuthenticationFilterWithRefreshTokens
                         .buildOrThrow())
                 .build();
         server.getInstance(Key.get(OAuth2Client.class)).load();
-        server.waitForNodeRefresh(Duration.ofSeconds(10));
         serverUri = server.getHttpsBaseUrl();
         uiUri = serverUri.resolve("/ui/");
 
@@ -123,7 +127,7 @@ public class TestOAuth2WebUiAuthenticationFilterWithRefreshTokens
                 serverUri + "/ui/logout/logout.html");
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
             throws Exception
     {
@@ -191,21 +195,24 @@ public class TestOAuth2WebUiAuthenticationFilterWithRefreshTokens
                                 .get()
                                 .build())
                 .execute()) {
-            assertEquals(response.code(), SC_OK);
-            assertEquals(response.request().url().toString(), uiUri.resolve("logout/logout.html").toString());
+            assertThat(response.code()).isEqualTo(SC_OK);
+            assertThat(response.request().url().toString()).isEqualTo(uiUri.resolve("logout/logout.html").toString());
         }
         assertThat(cookieStore.get(uiUri)).isEmpty();
     }
 
     protected void assertTokenIsExpired(String claimsJws)
     {
-        assertThatThrownBy(() -> newJwtParserBuilder()
-                .setSigningKeyResolver(new JwkSigningKeyResolver(new JwkService(
-                        URI.create("https://localhost:" + hydraIdP.getAuthPort() + "/.well-known/jwks.json"),
-                        new JettyHttpClient(new HttpClientConfig()
-                                .setTrustStorePath(Resources.getResource("cert/localhost.pem").getPath())))))
-                .build()
-                .parseClaimsJws(claimsJws));
+        HttpClientConfig httpClientConfig = new HttpClientConfig()
+                .setTrustStorePath(Resources.getResource("cert/localhost.pem").getPath());
+        try (JettyHttpClient httpClient = new JettyHttpClient(httpClientConfig)) {
+            assertThatThrownBy(() -> newJwtParserBuilder()
+                    .keyLocator(new JwkSigningKeyLocator(new JwkService(
+                            URI.create("https://localhost:" + hydraIdP.getAuthPort() + "/.well-known/jwks.json"),
+                            httpClient)))
+                    .build()
+                    .parseSignedClaims(claimsJws));
+        }
     }
 
     private void accessUi(OkHttpClient httpClient)
@@ -218,8 +225,8 @@ public class TestOAuth2WebUiAuthenticationFilterWithRefreshTokens
                                 .get()
                                 .build())
                 .execute()) {
-            assertEquals(response.code(), SC_OK);
-            assertEquals(response.request().url().toString(), uiUri.toString());
+            assertThat(response.code()).isEqualTo(SC_OK);
+            assertThat(response.request().url().toString()).isEqualTo(uiUri.toString());
         }
     }
 }

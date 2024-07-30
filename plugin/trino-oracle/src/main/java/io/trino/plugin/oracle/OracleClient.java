@@ -62,6 +62,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinCondition;
+import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
@@ -89,6 +90,7 @@ import java.time.temporal.ChronoField;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.function.BiFunction;
 
@@ -230,6 +232,14 @@ public class OracleClient
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
+                .withTypeClass("numeric_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint", "decimal", "real", "double"))
+                .map("$equal(left: numeric_type, right: numeric_type)").to("left = right")
+                .map("$not_equal(left: numeric_type, right: numeric_type)").to("left <> right")
+                .map("$less_than(left: numeric_type, right: numeric_type)").to("left < right")
+                .map("$less_than_or_equal(left: numeric_type, right: numeric_type)").to("left <= right")
+                .map("$greater_than(left: numeric_type, right: numeric_type)").to("left > right")
+                .map("$greater_than_or_equal(left: numeric_type, right: numeric_type)").to("left >= right")
+                .add(new RewriteStringComparison())
                 .build();
 
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(TRINO_BIGINT_TYPE, Optional.of("NUMBER"), Optional.of(0), Optional.of(0), Optional.empty(), Optional.empty());
@@ -349,6 +359,12 @@ public class OracleClient
     }
 
     @Override
+    public OptionalInt getMaxColumnNameLength(ConnectorSession session)
+    {
+        return getMaxColumnNameLengthFromDatabaseMetaData(session);
+    }
+
+    @Override
     public Optional<String> getTableComment(ResultSet resultSet)
             throws SQLException
     {
@@ -385,12 +401,12 @@ public class OracleClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        if (typeHandle.getJdbcType() == TRINO_BIGINT_TYPE) {
+        if (typeHandle.jdbcType() == TRINO_BIGINT_TYPE) {
             // Synthetic column
             return Optional.of(bigintColumnMapping());
         }
 
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
+        String jdbcTypeName = typeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
 
         Optional<ColumnMapping> mappingToVarchar = getForcedMappingToVarchar(typeHandle);
@@ -406,7 +422,7 @@ public class OracleClient
                     FULL_PUSHDOWN));
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.SMALLINT:
                 return Optional.of(ColumnMapping.longMapping(
                         SMALLINT,
@@ -428,8 +444,8 @@ public class OracleClient
                         oracleDoubleWriteFunction(),
                         FULL_PUSHDOWN));
             case OracleTypes.NUMBER:
-                int actualPrecision = typeHandle.getRequiredColumnSize();
-                int decimalDigits = typeHandle.getRequiredDecimalDigits();
+                int actualPrecision = typeHandle.requiredColumnSize();
+                int decimalDigits = typeHandle.requiredDecimalDigits();
                 // Map negative scale to decimal(p+s, 0).
                 int precision = actualPrecision + max(-decimalDigits, 0);
                 int scale = max(decimalDigits, 0);
@@ -466,7 +482,7 @@ public class OracleClient
 
             case OracleTypes.CHAR:
             case OracleTypes.NCHAR:
-                CharType charType = createCharType(typeHandle.getRequiredColumnSize());
+                CharType charType = createCharType(typeHandle.requiredColumnSize());
                 return Optional.of(ColumnMapping.sliceMapping(
                         charType,
                         charReadFunction(charType),
@@ -476,7 +492,7 @@ public class OracleClient
             case OracleTypes.VARCHAR:
             case OracleTypes.NVARCHAR:
                 return Optional.of(ColumnMapping.sliceMapping(
-                        createVarcharType(typeHandle.getRequiredColumnSize()),
+                        createVarcharType(typeHandle.requiredColumnSize()),
                         (varcharResultSet, varcharColumnIndex) -> utf8Slice(varcharResultSet.getString(varcharColumnIndex)),
                         varcharWriteFunction(),
                         FULL_PUSHDOWN));
@@ -498,7 +514,7 @@ public class OracleClient
                         DISABLE_PUSHDOWN));
 
             case OracleTypes.TIMESTAMP:
-                int timestampPrecision = typeHandle.getRequiredDecimalDigits();
+                int timestampPrecision = typeHandle.requiredDecimalDigits();
                 return Optional.of(oracleTimestampColumnMapping(createTimestampType(timestampPrecision)));
             case OracleTypes.TIMESTAMPTZ:
                 return Optional.of(oracleTimestampWithTimeZoneColumnMapping());
@@ -531,6 +547,12 @@ public class OracleClient
         return aggregateFunctionRewriter.rewrite(session, aggregate, assignments);
     }
 
+    @Override
+    public Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return connectorExpressionRewriter.rewrite(session, expression, assignments);
+    }
+
     private static Optional<JdbcTypeHandle> toTypeHandle(DecimalType decimalType)
     {
         return Optional.of(new JdbcTypeHandle(OracleTypes.NUMBER, Optional.of("NUMBER"), Optional.of(decimalType.getPrecision()), Optional.of(decimalType.getScale()), Optional.empty(), Optional.empty()));
@@ -551,7 +573,7 @@ public class OracleClient
     @Override
     protected boolean isSupportedJoinCondition(ConnectorSession session, JdbcJoinCondition joinCondition)
     {
-        return joinCondition.getOperator() != JoinCondition.Operator.IS_DISTINCT_FROM;
+        return joinCondition.getOperator() != JoinCondition.Operator.IDENTICAL;
     }
 
     public static LongWriteFunction trinoDateToOracleDateWriteFunction()
@@ -837,5 +859,11 @@ public class OracleClient
     public void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type)
     {
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support setting column types");
+    }
+
+    @Override
+    public void dropNotNullConstraint(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping a not null constraint");
     }
 }

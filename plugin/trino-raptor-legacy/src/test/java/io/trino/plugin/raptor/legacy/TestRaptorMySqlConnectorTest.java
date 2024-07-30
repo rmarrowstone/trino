@@ -17,14 +17,14 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
+import org.junit.jupiter.api.AfterAll;
 import org.testcontainers.containers.MySQLContainer;
-import org.testng.annotations.AfterClass;
 
-import java.io.File;
 import java.util.Map;
 
 import static io.trino.plugin.raptor.legacy.RaptorQueryRunner.copyTables;
 import static io.trino.plugin.raptor.legacy.RaptorQueryRunner.createSession;
+import static io.trino.plugin.raptor.legacy.RaptorQueryRunner.createTempDirectory;
 import static java.lang.String.format;
 
 public class TestRaptorMySqlConnectorTest
@@ -36,12 +36,12 @@ public class TestRaptorMySqlConnectorTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        mysqlContainer = new MySQLContainer<>("mysql:8.0.30");
+        mysqlContainer = new MySQLContainer<>("mysql:8.0.36");
         mysqlContainer.start();
         return createRaptorMySqlQueryRunner(getJdbcUrl(mysqlContainer));
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public final void destroy()
     {
         mysqlContainer.close();
@@ -59,20 +59,20 @@ public class TestRaptorMySqlConnectorTest
     private static QueryRunner createRaptorMySqlQueryRunner(String mysqlUrl)
             throws Exception
     {
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(createSession("tpch")).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(createSession("tpch")).build();
 
         queryRunner.installPlugin(new TpchPlugin());
         queryRunner.createCatalog("tpch", "tpch");
 
         queryRunner.installPlugin(new RaptorPlugin());
-        File baseDir = queryRunner.getCoordinator().getBaseDataDir().toFile();
         Map<String, String> raptorProperties = ImmutableMap.<String, String>builder()
                 .put("metadata.db.type", "mysql")
                 .put("metadata.db.url", mysqlUrl)
-                .put("storage.data-directory", new File(baseDir, "data").getAbsolutePath())
+                .put("storage.compaction-enabled", "false")
+                .put("storage.data-directory", createTempDirectory("raptor-db").toString())
                 .put("storage.max-shard-rows", "2000")
                 .put("backup.provider", "file")
-                .put("backup.directory", new File(baseDir, "backup").getAbsolutePath())
+                .put("backup.directory", createTempDirectory("raptor-db").toString())
                 .buildOrThrow();
 
         queryRunner.createCatalog("raptor", "raptor_legacy", raptorProperties);

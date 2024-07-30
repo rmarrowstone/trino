@@ -34,7 +34,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * A unit test for {@link TrinoResultSet}.
@@ -69,7 +69,7 @@ public class TestTrinoResultSet
                         catch (InterruptedException e) {
                             interruptedButSwallowedLatch.countDown();
                         }
-                        return ImmutableList.of((ImmutableList.of(new Object())));
+                        return ImmutableList.of(ImmutableList.of(new Object()));
                     }
                 },
                 new ArrayBlockingQueue<>(100));
@@ -82,7 +82,7 @@ public class TestTrinoResultSet
             TimeUnit.MILLISECONDS.sleep(10);
         }
         boolean interruptedButSwallowed = interruptedButSwallowedLatch.await(5000, TimeUnit.MILLISECONDS);
-        assertTrue(interruptedButSwallowed);
+        assertThat(interruptedButSwallowed).isTrue();
     }
 
     @Test
@@ -107,7 +107,7 @@ public class TestTrinoResultSet
                     public Iterable<List<Object>> next()
                     {
                         thread.compareAndSet(null, Thread.currentThread());
-                        return ImmutableList.of((ImmutableList.of(new Object())));
+                        return ImmutableList.of(ImmutableList.of(new Object()));
                     }
                 },
                 queue);
@@ -204,7 +204,7 @@ public class TestTrinoResultSet
                         }
 
                         @Override
-                        public Optional<String> getSetPath()
+                        public Optional<List<String>> getSetPath()
                         {
                             throw new UnsupportedOperationException();
                         }

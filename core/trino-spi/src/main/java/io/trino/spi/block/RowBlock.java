@@ -152,6 +152,11 @@ public final class RowBlock
         return rowIsNull != null;
     }
 
+    boolean[] getRawRowIsNull()
+    {
+        return rowIsNull;
+    }
+
     @Override
     public int getPositionCount()
     {
@@ -247,12 +252,6 @@ public final class RowBlock
             newBlocks[i] = fieldBlocks[i].copyWithAppendedNull();
         }
         return new RowBlock(positionCount + 1, newRowIsNull, newBlocks, fixedSizePerRow);
-    }
-
-    @Override
-    public List<Block> getChildren()
-    {
-        return fieldBlocksList;
     }
 
     @Override
@@ -353,15 +352,6 @@ public final class RowBlock
             return this;
         }
         return new RowBlock(length, newRowIsNull, newBlocks, fixedSizePerRow);
-    }
-
-    @Override
-    public <T> T getObject(int position, Class<T> clazz)
-    {
-        if (clazz != SqlRow.class) {
-            throw new IllegalArgumentException("clazz must be SqlRow.class");
-        }
-        return clazz.cast(getRow(position));
     }
 
     public SqlRow getRow(int position)
@@ -501,5 +491,11 @@ public final class RowBlock
     public RowBlock getUnderlyingValueBlock()
     {
         return this;
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(rowIsNull, 0, positionCount);
     }
 }

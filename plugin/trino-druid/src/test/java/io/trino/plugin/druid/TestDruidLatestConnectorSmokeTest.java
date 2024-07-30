@@ -13,16 +13,13 @@
  */
 package io.trino.plugin.druid;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.jdbc.BaseJdbcConnectorSmokeTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
-import io.trino.testng.services.ManageTestResources;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import static io.trino.plugin.druid.DruidQueryRunner.createDruidQueryRunnerTpch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
@@ -30,7 +27,6 @@ import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 public class TestDruidLatestConnectorSmokeTest
         extends BaseJdbcConnectorSmokeTest
 {
-    @ManageTestResources.Suppress(because = "Not a TestNG test class")
     private TestingDruidServer druidServer;
 
     @Override
@@ -38,11 +34,9 @@ public class TestDruidLatestConnectorSmokeTest
             throws Exception
     {
         druidServer = closeAfterClass(new TestingDruidServer("apache/druid:0.20.0"));
-        return createDruidQueryRunnerTpch(
-                druidServer,
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                REQUIRED_TPCH_TABLES);
+        return DruidQueryRunner.builder(druidServer)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @AfterAll
@@ -56,11 +50,11 @@ public class TestDruidLatestConnectorSmokeTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_CREATE_SCHEMA,
-                    SUPPORTS_CREATE_TABLE,
-                    SUPPORTS_RENAME_TABLE,
-                    SUPPORTS_DELETE,
-                    SUPPORTS_INSERT,
-                    SUPPORTS_UPDATE -> false;
+                 SUPPORTS_CREATE_TABLE,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_DELETE,
+                 SUPPORTS_INSERT,
+                 SUPPORTS_UPDATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }

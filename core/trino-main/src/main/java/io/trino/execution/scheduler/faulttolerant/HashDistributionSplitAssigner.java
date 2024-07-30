@@ -42,12 +42,12 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.IntStream;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static io.trino.sql.planner.SystemPartitioningHandle.SCALED_WRITER_HASH_DISTRIBUTION;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
@@ -78,9 +78,9 @@ class HashDistributionSplitAssigner
             int targetMinTaskCount,
             int targetMaxTaskCount)
     {
-        if (fragment.getPartitioning().equals(SCALED_WRITER_HASH_DISTRIBUTION)) {
+        if (fragment.getPartitioning().isScaleWriters()) {
             verify(fragment.getPartitionedSources().isEmpty() && fragment.getRemoteSourceNodes().size() == 1,
-                    "SCALED_WRITER_HASH_DISTRIBUTION fragments are expected to have exactly one remote source and no table scans");
+                    "fragments using scale-writers partitioning are expected to have exactly one remote source and no table scans");
         }
         return new HashDistributionSplitAssigner(
                 catalogRequirement,
@@ -94,7 +94,7 @@ class HashDistributionSplitAssigner
                         targetPartitionSizeInBytes,
                         targetMinTaskCount,
                         targetMaxTaskCount,
-                        sourceId -> fragment.getPartitioning().equals(SCALED_WRITER_HASH_DISTRIBUTION),
+                        sourceId -> fragment.getPartitioning().isScaleWriters(),
                         // never merge partitions for table write to avoid running into the maximum writers limit per task
                         !isWriteFragment(fragment)));
     }
@@ -139,7 +139,7 @@ class HashDistributionSplitAssigner
                                 .orElse(ImmutableSet.of());
                         assignment.addPartition(new Partition(
                                 taskPartitionId,
-                                new NodeRequirements(catalogRequirement, hostRequirement)));
+                                new NodeRequirements(catalogRequirement, hostRequirement, hostRequirement.isEmpty())));
                         createdTaskPartitions.add(taskPartitionId);
                     }
                 }
@@ -353,6 +353,16 @@ class HashDistributionSplitAssigner
         {
             return splitBy;
         }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("subPartitions", subPartitions)
+                    .add("splitBy", splitBy)
+                    .add("nextSubPartition", nextSubPartition)
+                    .toString();
+        }
     }
 
     @VisibleForTesting
@@ -375,6 +385,12 @@ class HashDistributionSplitAssigner
         {
             checkState(id.isPresent(), "id is expected to be assigned");
             return id.getAsInt();
+        }
+
+        @Override
+        public String toString()
+        {
+            return id.toString();
         }
     }
 
@@ -401,5 +417,21 @@ class HashDistributionSplitAssigner
         };
 
         return fragment.getRoot().accept(visitor, null);
+    }
+
+    @Override
+    public String toString()
+    {
+        return toStringHelper(this)
+                .add("catalogRequirement", catalogRequirement)
+                .add("replicatedSources", replicatedSources)
+                .add("allSources", allSources)
+                .add("sourcePartitioningScheme", sourcePartitioningScheme)
+                .add("sourcePartitionToTaskPartition", sourcePartitionToTaskPartition)
+                .add("createdTaskPartitions", createdTaskPartitions)
+                .add("completedSources", completedSources)
+                .add("replicatedSplits.size()", replicatedSplits.size())
+                .add("allTaskPartitionsCreated", allTaskPartitionsCreated)
+                .toString();
     }
 }

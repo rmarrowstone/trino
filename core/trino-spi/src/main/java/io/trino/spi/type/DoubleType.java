@@ -38,7 +38,7 @@ import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_FIRST;
 import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_LAST;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.READ_VALUE;
@@ -226,23 +226,23 @@ public final class DoubleType
     }
 
     @SuppressWarnings("FloatingPointEquality")
-    @ScalarOperator(IS_DISTINCT_FROM)
-    private static boolean distinctFromOperator(double left, @IsNull boolean leftNull, double right, @IsNull boolean rightNull)
+    @ScalarOperator(IDENTICAL)
+    private static boolean identical(double left, @IsNull boolean leftNull, double right, @IsNull boolean rightNull)
     {
         if (leftNull || rightNull) {
-            return leftNull != rightNull;
+            return leftNull == rightNull;
         }
 
         if (Double.isNaN(left) && Double.isNaN(right)) {
-            return false;
+            return true;
         }
-        return left != right;
+        return left == right;
     }
 
     @ScalarOperator(COMPARISON_UNORDERED_LAST)
     private static long comparisonUnorderedLastOperator(double left, double right)
     {
-        return Double.compare(left, right);
+        return compare(left, right);
     }
 
     @ScalarOperator(COMPARISON_UNORDERED_FIRST)
@@ -258,7 +258,8 @@ public final class DoubleType
         if (Double.isNaN(right)) {
             return 1;
         }
-        return Double.compare(left, right);
+
+        return compare(left, right);
     }
 
     @ScalarOperator(LESS_THAN)
@@ -271,5 +272,14 @@ public final class DoubleType
     private static boolean lessThanOrEqualOperator(double left, double right)
     {
         return left <= right;
+    }
+
+    private static int compare(double left, double right)
+    {
+        if (left == right) { // Double.compare considers 0.0 and -0.0 different from each other
+            return 0;
+        }
+
+        return Double.compare(left, right);
     }
 }

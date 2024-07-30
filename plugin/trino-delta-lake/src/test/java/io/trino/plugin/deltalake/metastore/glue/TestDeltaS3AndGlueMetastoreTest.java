@@ -16,17 +16,15 @@ package io.trino.plugin.deltalake.metastore.glue;
 import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.deltalake.DeltaLakeQueryRunner;
 import io.trino.plugin.hive.BaseS3AndGlueMetastoreTest;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 
-import java.nio.file.Path;
+import java.net.URI;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.hive.metastore.glue.GlueHiveMetastore.createTestingGlueHiveMetastore;
+import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,17 +40,17 @@ public class TestDeltaS3AndGlueMetastoreTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        metastore = createTestingGlueHiveMetastore(Path.of(schemaPath()));
-        DistributedQueryRunner queryRunner = DeltaLakeQueryRunner.builder()
-                .setCatalogName(DELTA_CATALOG)
+        metastore = createTestingGlueHiveMetastore(URI.create(schemaPath()), this::closeAfterClass);
+        return DeltaLakeQueryRunner.builder(schemaName)
                 .setDeltaProperties(ImmutableMap.<String, String>builder()
                         .put("hive.metastore", "glue")
                         .put("hive.metastore.glue.default-warehouse-dir", schemaPath())
+                        .put("fs.hadoop.enabled", "false")
+                        .put("fs.native-s3.enabled", "true")
                         .put("delta.enable-non-concurrent-writes", "true")
                         .buildOrThrow())
+                .setSchemaLocation(schemaPath())
                 .build();
-        queryRunner.execute("CREATE SCHEMA " + schemaName + " WITH (location = '" + schemaPath() + "')");
-        return queryRunner;
     }
 
     @Override

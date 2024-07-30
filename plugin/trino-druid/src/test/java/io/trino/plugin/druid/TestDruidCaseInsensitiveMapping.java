@@ -14,14 +14,11 @@
 package io.trino.plugin.druid;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.base.mapping.TableMappingRule;
 import io.trino.plugin.jdbc.BaseCaseInsensitiveMappingTest;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.SqlExecutor;
-import io.trino.testng.services.ManageTestResources;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -33,12 +30,9 @@ import java.util.Optional;
 import static io.trino.plugin.base.mapping.RuleBasedIdentifierMappingUtils.createRuleBasedIdentifierMappingFile;
 import static io.trino.plugin.base.mapping.RuleBasedIdentifierMappingUtils.updateRuleBasedIdentifierMappingFile;
 import static io.trino.plugin.druid.DruidQueryRunner.copyAndIngestTpchDataFromSourceToTarget;
-import static io.trino.plugin.druid.DruidQueryRunner.createDruidQueryRunnerTpch;
 import static io.trino.plugin.druid.DruidTpchTables.SELECT_FROM_ORDERS;
 import static io.trino.plugin.druid.DruidTpchTables.SELECT_FROM_REGION;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.tpch.TpchTable.ORDERS;
-import static io.trino.tpch.TpchTable.REGION;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.abort;
@@ -48,7 +42,6 @@ import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 public class TestDruidCaseInsensitiveMapping
         extends BaseCaseInsensitiveMappingTest
 {
-    @ManageTestResources.Suppress(because = "Not a TestNG test class")
     private TestingDruidServer druidServer;
     private Path mappingFile;
 
@@ -67,13 +60,11 @@ public class TestDruidCaseInsensitiveMapping
     {
         druidServer = new TestingDruidServer();
         mappingFile = createRuleBasedIdentifierMappingFile();
-        DistributedQueryRunner queryRunner = createDruidQueryRunnerTpch(
-                druidServer,
-                ImmutableMap.of(),
-                ImmutableMap.of("case-insensitive-name-matching", "true",
-                        "case-insensitive-name-matching.config-file", mappingFile.toFile().getAbsolutePath(),
-                        "case-insensitive-name-matching.config-file.refresh-period", "1ms"), // ~always refresh
-                ImmutableList.of(ORDERS, REGION));
+        QueryRunner queryRunner = DruidQueryRunner.builder(druidServer)
+                .addConnectorProperty("case-insensitive-name-matching", "true")
+                .addConnectorProperty("case-insensitive-name-matching.config-file", mappingFile.toFile().getAbsolutePath())
+                .addConnectorProperty("case-insensitive-name-matching.config-file.refresh-period", "1ms") // ~always refresh
+                .build();
         copyAndIngestTpchDataFromSourceToTarget(queryRunner.execute(SELECT_FROM_ORDERS + " LIMIT 10"), this.druidServer, "orders", "MiXeD_CaSe", Optional.empty());
 
         return queryRunner;

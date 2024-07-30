@@ -16,7 +16,7 @@ package io.trino.plugin.iceberg;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.ErrorType;
 import io.trino.testing.BaseFailureRecoveryTest;
-import org.testng.annotations.DataProvider;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
@@ -41,17 +41,7 @@ public abstract class BaseIcebergFailureRecoveryTest
         return true;
     }
 
-    @Override
-    @DataProvider(name = "parallelTests", parallel = true)
-    public Object[][] parallelTests()
-    {
-        return moreParallelTests(super.parallelTests(),
-                parallelTest("testCreatePartitionedTable", this::testCreatePartitionedTable),
-                parallelTest("testInsertIntoNewPartition", this::testInsertIntoNewPartition),
-                parallelTest("testInsertIntoExistingPartition", this::testInsertIntoExistingPartition),
-                parallelTest("testMergePartitionedTable", this::testMergePartitionedTable));
-    }
-
+    @Test
     protected void testCreatePartitionedTable()
     {
         testTableModification(
@@ -61,10 +51,11 @@ public abstract class BaseIcebergFailureRecoveryTest
     }
 
     // Copied from BaseDeltaFailureRecoveryTest
+    @Test
     @Override
     protected void testDelete()
     {
-        // Test method is overriden because method from superclass assumes more complex plan for `DELETE` query.
+        // Test method is overridden because method from superclass assumes more complex plan for `DELETE` query.
         // Assertions do not play well if plan consists of just two fragments.
 
         Optional<String> setupQuery = Optional.of("CREATE TABLE <table> AS SELECT * FROM orders");
@@ -138,10 +129,11 @@ public abstract class BaseIcebergFailureRecoveryTest
     }
 
     // Copied from BaseDeltaFailureRecoveryTest
+    @Test
     @Override
     protected void testUpdate()
     {
-        // Test method is overriden because method from superclass assumes more complex plan for `UPDATE` query.
+        // Test method is overridden because method from superclass assumes more complex plan for `UPDATE` query.
         // Assertions do not play well if plan consists of just two fragments.
 
         Optional<String> setupQuery = Optional.of("CREATE TABLE <table> AS SELECT * FROM orders");
@@ -213,6 +205,7 @@ public abstract class BaseIcebergFailureRecoveryTest
         }
     }
 
+    @Test
     protected void testInsertIntoNewPartition()
     {
         testTableModification(
@@ -221,6 +214,7 @@ public abstract class BaseIcebergFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testInsertIntoExistingPartition()
     {
         testTableModification(
@@ -229,6 +223,7 @@ public abstract class BaseIcebergFailureRecoveryTest
                 Optional.of("DROP TABLE <table>"));
     }
 
+    @Test
     protected void testMergePartitionedTable()
     {
         testTableModification(

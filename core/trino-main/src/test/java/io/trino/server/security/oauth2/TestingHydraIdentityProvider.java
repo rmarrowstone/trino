@@ -29,11 +29,11 @@ import io.airlift.log.Level;
 import io.airlift.log.Logging;
 import io.airlift.node.NodeConfig;
 import io.airlift.node.NodeInfo;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.server.testing.TestingTrinoServer;
 import io.trino.server.ui.OAuth2WebUiAuthenticationFilter;
 import io.trino.server.ui.WebUiModule;
 import io.trino.testing.ResourcePresence;
-import io.trino.util.AutoCloseableCloser;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -287,8 +287,8 @@ public class TestingHydraIdentityProvider
                             new Request.Builder()
                                     .url("https://localhost:" + getAdminPort() + "/oauth2/auth/requests/login/accept?login_challenge=" + loginChallenge)
                                     .put(RequestBody.create(
-                                            MediaType.get(APPLICATION_JSON),
-                                            mapper.writeValueAsString(mapper.createObjectNode().put("subject", "foo@bar.com"))))
+                                            mapper.writeValueAsString(mapper.createObjectNode().put("subject", "foo@bar.com")),
+                                            MediaType.get(APPLICATION_JSON)))
                                     .build())
                     .execute();
         }
@@ -314,10 +314,10 @@ public class TestingHydraIdentityProvider
                             new Request.Builder()
                                     .url("https://localhost:" + getAdminPort() + "/oauth2/auth/requests/consent/accept?consent_challenge=" + consentChallenge)
                                     .put(RequestBody.create(
-                                            MediaType.get(APPLICATION_JSON),
                                             mapper.writeValueAsString(mapper.createObjectNode()
                                                     .<ObjectNode>set("grant_scope", consentRequest.get("requested_scope"))
-                                                    .<ObjectNode>set("grant_access_token_audience", consentRequest.get("requested_access_token_audience")))))
+                                                    .<ObjectNode>set("grant_access_token_audience", consentRequest.get("requested_access_token_audience"))),
+                                            MediaType.get(APPLICATION_JSON)))
                                     .build())
                     .execute();
         }

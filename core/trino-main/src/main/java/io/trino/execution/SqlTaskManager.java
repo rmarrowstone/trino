@@ -31,7 +31,6 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.Session;
 import io.trino.cache.NonEvictableLoadingCache;
-import io.trino.connector.CatalogProperties;
 import io.trino.connector.ConnectorServicesProvider;
 import io.trino.event.SplitMonitor;
 import io.trino.exchange.ExchangeManagerRegistry;
@@ -53,6 +52,7 @@ import io.trino.operator.scalar.JoniRegexpReplaceLambdaFunction;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
 import io.trino.spi.VersionEmbedder;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spiller.LocalSpillManager;
@@ -78,7 +78,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Predicate;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -123,6 +123,7 @@ public class SqlTaskManager
 
     private final ScheduledExecutorService taskManagementExecutor;
     private final ScheduledExecutorService driverYieldExecutor;
+    private final ScheduledExecutorService driverTimeoutExecutor;
 
     private final Duration infoCacheTime;
     private final Duration clientTimeout;
@@ -216,6 +217,7 @@ public class SqlTaskManager
 
         this.taskManagementExecutor = taskManagementExecutor.getExecutor();
         this.driverYieldExecutor = newScheduledThreadPool(config.getTaskYieldThreads(), threadsNamed("task-yield-%s"));
+        this.driverTimeoutExecutor = newScheduledThreadPool(config.getDriverTimeoutThreads(), threadsNamed("task-driver-timeout-%s"));
 
         SqlTaskExecutionFactory sqlTaskExecutionFactory = new SqlTaskExecutionFactory(taskNotificationExecutor, taskExecutor, planner, splitMonitor, tracer, config);
 
@@ -269,6 +271,7 @@ public class SqlTaskManager
                 gcMonitor,
                 taskNotificationExecutor,
                 driverYieldExecutor,
+                driverTimeoutExecutor,
                 maxQuerySpillPerNode,
                 localSpillManager.getSpillSpaceTracker());
     }
@@ -335,6 +338,7 @@ public class SqlTaskManager
         }
         taskNotificationExecutor.shutdownNow();
         driverYieldExecutor.shutdownNow();
+        driverTimeoutExecutor.shutdownNow();
     }
 
     @Managed
@@ -447,13 +451,14 @@ public class SqlTaskManager
         return sqlTask.acknowledgeAndGetNewDynamicFilterDomains(currentDynamicFiltersVersion);
     }
 
-    private final ReentrantLock catalogsLock = new ReentrantLock();
+    private final ReentrantReadWriteLock catalogsLock = new ReentrantReadWriteLock();
 
     public void pruneCatalogs(Set<CatalogHandle> activeCatalogs)
     {
-        catalogsLock.lock();
+        Set<CatalogHandle> catalogsInUse = new HashSet<>(activeCatalogs);
+        ReentrantReadWriteLock.WriteLock pruneLock = catalogsLock.writeLock();
+        pruneLock.lock();
         try {
-            Set<CatalogHandle> catalogsInUse = new HashSet<>(activeCatalogs);
             for (SqlTask task : tasks.asMap().values()) {
                 // add all catalogs being used by a non-done task
                 if (!task.getTaskState().isDone()) {
@@ -463,7 +468,7 @@ public class SqlTaskManager
             connectorServicesProvider.pruneCatalogs(catalogsInUse);
         }
         finally {
-            catalogsLock.unlock();
+            pruneLock.unlock();
         }
     }
 
@@ -530,10 +535,19 @@ public class SqlTaskManager
         fragment.map(PlanFragment::getActiveCatalogs)
                 .ifPresent(activeCatalogs -> {
                     Set<CatalogHandle> catalogHandles = activeCatalogs.stream()
-                            .map(CatalogProperties::getCatalogHandle)
+                            .map(CatalogProperties::catalogHandle)
                             .collect(toImmutableSet());
-                    if (sqlTask.setCatalogs(catalogHandles)) {
-                        connectorServicesProvider.ensureCatalogsLoaded(session, activeCatalogs);
+                    sqlTask.setCatalogs(catalogHandles);
+                    if (!sqlTask.catalogsLoaded()) {
+                        ReentrantReadWriteLock.ReadLock catalogInitLock = catalogsLock.readLock();
+                        catalogInitLock.lock();
+                        try {
+                            connectorServicesProvider.ensureCatalogsLoaded(session, activeCatalogs);
+                            sqlTask.setCatalogsLoaded();
+                        }
+                        finally {
+                            catalogInitLock.unlock();
+                        }
                     }
                 });
 
@@ -633,9 +647,9 @@ public class SqlTaskManager
                 .map(SqlTask::getTaskInfo)
                 .filter(Objects::nonNull)
                 .forEach(taskInfo -> {
-                    TaskId taskId = taskInfo.getTaskStatus().getTaskId();
+                    TaskId taskId = taskInfo.taskStatus().getTaskId();
                     try {
-                        DateTime endTime = taskInfo.getStats().getEndTime();
+                        DateTime endTime = taskInfo.stats().getEndTime();
                         if (endTime != null && endTime.isBefore(oldestAllowedTask)) {
                             // The removal here is concurrency safe with respect to any concurrent loads: the cache has no expiration,
                             // the taskId is in the cache, so there mustn't be an ongoing load.
@@ -655,11 +669,11 @@ public class SqlTaskManager
         for (SqlTask sqlTask : tasks.asMap().values()) {
             try {
                 TaskInfo taskInfo = sqlTask.getTaskInfo();
-                TaskStatus taskStatus = taskInfo.getTaskStatus();
+                TaskStatus taskStatus = taskInfo.taskStatus();
                 if (taskStatus.getState().isDone()) {
                     continue;
                 }
-                DateTime lastHeartbeat = taskInfo.getLastHeartbeat();
+                DateTime lastHeartbeat = taskInfo.lastHeartbeat();
                 if (lastHeartbeat != null && lastHeartbeat.isBefore(oldestAllowedHeartbeat)) {
                     log.info("Failing abandoned task %s", taskStatus.getTaskId());
                     sqlTask.failed(new TrinoException(ABANDONED_TASK, format("Task %s has not been accessed since %s: currentTime %s", taskStatus.getTaskId(), lastHeartbeat, now)));

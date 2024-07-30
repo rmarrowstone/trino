@@ -56,10 +56,12 @@ import java.util.function.Function;
 import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableListMultimap.toImmutableListMultimap;
+import static com.google.common.collect.Maps.transformValues;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.concurrent.MoreFutures.toListenableFuture;
@@ -93,6 +95,8 @@ class EventDrivenTaskSource
     @GuardedBy("this")
     private ListenableFuture<AssignmentResult> future;
     @GuardedBy("this")
+    private boolean finished;
+    @GuardedBy("this")
     private boolean closed;
     @GuardedBy("this")
     private final Closer closer = Closer.create();
@@ -123,10 +127,14 @@ class EventDrivenTaskSource
         this.getSplitTimeRecorder = requireNonNull(getSplitTimeRecorder, "getSplitTimeRecorder is null");
     }
 
-    public synchronized ListenableFuture<AssignmentResult> process()
+    public synchronized Optional<ListenableFuture<AssignmentResult>> process()
     {
         checkState(!closed, "closed");
         checkState(future == null || future.isDone(), "still in process");
+
+        if (finished) {
+            return Optional.empty();
+        }
 
         if (!initialized) {
             initialize();
@@ -134,7 +142,7 @@ class EventDrivenTaskSource
         }
 
         future = processNext();
-        return future;
+        return Optional.of(future);
     }
 
     @GuardedBy("this")
@@ -167,6 +175,7 @@ class EventDrivenTaskSource
                 .collect(toImmutableList());
 
         if (futures.isEmpty()) {
+            finished = true;
             return immediateFuture(assigner.finish());
         }
 
@@ -219,6 +228,23 @@ class EventDrivenTaskSource
         catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public String getDebugInfo()
+    {
+        return toStringHelper(this)
+                .add("sourceExchanges", transformValues(sourceExchanges, Exchange::getId))
+                .add("remoteSources", remoteSources)
+                .add("assigner", assigner)
+                .add("splitBatchSize", splitBatchSize)
+                .add("targetExchangeSplitSizeInBytes", targetExchangeSplitSizeInBytes)
+                .add("sourcePartitioningScheme", sourcePartitioningScheme)
+                .add("initialized", initialized)
+                .add("splitSources", splitSources)
+                .add("completedFragments", completedFragments)
+                .add("future", future)
+                .add("closed", closed)
+                .toString();
     }
 
     private static class IdempotentSplitSource
@@ -294,6 +320,19 @@ class EventDrivenTaskSource
         {
             finished = lastBatch;
             future = Optional.empty();
+        }
+
+        @Override
+        public synchronized String toString()
+        {
+            return toStringHelper(this)
+                    .add("planNodeId", planNodeId)
+                    .add("sourceFragmentId", sourceFragmentId)
+                    .add("splitSource", splitSource)
+                    .add("splitBatchSize", splitBatchSize)
+                    .add("closed", closed)
+                    .add("finished", finished)
+                    .toString();
         }
 
         public class SplitBatchReference
@@ -403,6 +442,15 @@ class EventDrivenTaskSource
         public Optional<List<Object>> getTableExecuteSplitsInfo()
         {
             return Optional.empty();
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("handleSource", handleSource)
+                    .add("targetSplitSizeInBytes", targetSplitSizeInBytes)
+                    .toString();
         }
     }
 

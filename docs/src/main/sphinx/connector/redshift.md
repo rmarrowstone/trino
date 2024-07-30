@@ -43,7 +43,6 @@ use {doc}`secrets </security/secrets>` to avoid actual values in the catalog
 properties files.
 
 (redshift-tls)=
-
 ### Connection security
 
 If you have TLS configured with a globally-trusted certificate installed on your
@@ -86,14 +85,17 @@ catalog named `sales` using the configured connector.
 ```{include} jdbc-domain-compaction-threshold.fragment
 ```
 
-```{include} jdbc-procedures.fragment
-```
-
 ```{include} jdbc-case-insensitive-matching.fragment
 ```
 
 ```{include} non-transactional-insert.fragment
 ```
+
+(redshift-fte-support)=
+## Fault-tolerant execution support
+
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
 
 ## Querying Redshift
 
@@ -129,14 +131,12 @@ If you used a different name for your catalog properties file, use that catalog
 name instead of `example` in the above examples.
 
 (redshift-type-mapping)=
-
 ## Type mapping
 
 ```{include} jdbc-type-mapping.fragment
 ```
 
 (redshift-sql-support)=
-
 ## SQL support
 
 The connector provides read access and write access to data and metadata in
@@ -162,21 +162,20 @@ statements, the connector supports the following features:
 ```{include} alter-schema-limitation.fragment
 ```
 
-(redshift-fte-support)=
+### Procedures
 
-## Fault-tolerant execution support
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
+```
 
-The connector supports {doc}`/admin/fault-tolerant-execution` of query
-processing. Read and write operations are both supported with any retry policy.
-
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access Redshift.
 
 (redshift-query-function)=
-
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying database directly. It
 requires syntax native to Redshift, because the full query is pushed down and

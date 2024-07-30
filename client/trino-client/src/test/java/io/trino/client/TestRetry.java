@@ -44,7 +44,6 @@ import static java.net.HttpURLConnection.HTTP_OK;
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
-import static org.testng.Assert.assertTrue;
 
 @TestInstance(PER_METHOD)
 public class TestRetry
@@ -69,6 +68,36 @@ public class TestRetry
     }
 
     @Test
+    public void testRetryOnInitial()
+    {
+        java.time.Duration timeout = java.time.Duration.ofMillis(100);
+        OkHttpClient httpClient = new OkHttpClient.Builder()
+                .connectTimeout(timeout)
+                .readTimeout(timeout)
+                .writeTimeout(timeout)
+                .callTimeout(timeout)
+                .build();
+        ClientSession session = ClientSession.builder()
+                .server(URI.create("http://" + server.getHostName() + ":" + server.getPort()))
+                .timeZone(ZoneId.of("UTC"))
+                .source("test")
+                .clientRequestTimeout(Duration.valueOf("2s"))
+                .build();
+
+        server.enqueue(statusAndBody(HTTP_OK, newQueryResults("RUNNING"))
+                .setSocketPolicy(SocketPolicy.STALL_SOCKET_AT_START));
+        server.enqueue(statusAndBody(HTTP_OK, newQueryResults("FINISHED")));
+
+        try (StatementClient client = newStatementClient(httpClient, session, "SELECT 1", Optional.empty())) {
+            while (client.advance()) {
+                // consume all client data
+            }
+            assertThat(client.isFinished()).isTrue();
+        }
+        assertThat(server.getRequestCount()).isEqualTo(2);
+    }
+
+    @Test
     public void testRetryOnBrokenStream()
     {
         java.time.Duration timeout = java.time.Duration.ofMillis(100);
@@ -81,6 +110,7 @@ public class TestRetry
         ClientSession session = ClientSession.builder()
                 .server(URI.create("http://" + server.getHostName() + ":" + server.getPort()))
                 .timeZone(ZoneId.of("UTC"))
+                .source("test")
                 .clientRequestTimeout(Duration.valueOf("2s"))
                 .build();
 
@@ -93,7 +123,7 @@ public class TestRetry
             while (client.advance()) {
                 // consume all client data
             }
-            assertTrue(client.isFinished());
+            assertThat(client.isFinished()).isTrue();
         }
         assertThat(server.getRequestCount()).isEqualTo(3);
     }

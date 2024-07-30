@@ -28,6 +28,7 @@ import io.trino.split.RemoteSplit;
 import io.trino.sql.planner.plan.PlanNodeId;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -35,6 +36,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
@@ -63,7 +65,7 @@ class ArbitraryDistributionSplitAssigner
     private long targetPartitionSizeInBytes;
     private long roundedTargetPartitionSizeInBytes;
     private final List<PartitionAssignment> allAssignments = new ArrayList<>();
-    private final Map<Optional<HostAddress>, PartitionAssignment> openAssignments = new HashMap<>();
+    private final Map<NodeRequirements, PartitionAssignment> openAssignments = new HashMap<>();
 
     private final Set<PlanNodeId> completedSources = new HashSet<>();
 
@@ -132,7 +134,7 @@ class ArbitraryDistributionSplitAssigner
                     partitionAssignment.getPartitionId(),
                     planNodeId,
                     false,
-                    singleSourcePartition(SINGLE_SOURCE_PARTITION_ID, splits),
+                    singleSourcePartition(splits),
                     noMoreSplits));
         }
         if (noMoreSplits) {
@@ -152,13 +154,13 @@ class ArbitraryDistributionSplitAssigner
             if (allAssignments.isEmpty()) {
                 // at least a single partition is expected to be created
                 allAssignments.add(new PartitionAssignment(0));
-                assignment.addPartition(new Partition(0, new NodeRequirements(catalogRequirement, ImmutableSet.of())));
+                assignment.addPartition(new Partition(0, new NodeRequirements(catalogRequirement, ImmutableSet.of(), true)));
                 for (PlanNodeId replicatedSourceId : replicatedSources) {
                     assignment.updatePartition(new PartitionUpdate(
                             0,
                             replicatedSourceId,
                             false,
-                            singleSourcePartition(SINGLE_SOURCE_PARTITION_ID, replicatedSplits.get(replicatedSourceId)),
+                            singleSourcePartition(replicatedSplits.get(replicatedSourceId)),
                             true));
                 }
                 for (PlanNodeId partitionedSourceId : partitionedSources) {
@@ -180,7 +182,7 @@ class ArbitraryDistributionSplitAssigner
                                     partitionAssignment.getPartitionId(),
                                     partitionedSourceNodeId,
                                     false,
-                                    singleSourcePartition(0, ImmutableList.of()),
+                                    singleSourcePartition(ImmutableList.of()),
                                     true));
                         }
                         // seal partition
@@ -195,7 +197,7 @@ class ArbitraryDistributionSplitAssigner
         return assignment.build();
     }
 
-    private ListMultimap<Integer, Split> singleSourcePartition(int sourcePartitionId, List<Split> splits)
+    private ListMultimap<Integer, Split> singleSourcePartition(List<Split> splits)
     {
         ImmutableListMultimap.Builder<Integer, Split> builder = ImmutableListMultimap.builder();
         builder.putAll(0, splits);
@@ -207,8 +209,8 @@ class ArbitraryDistributionSplitAssigner
         AssignmentResult.Builder assignment = AssignmentResult.builder();
 
         for (Split split : splits) {
-            Optional<HostAddress> hostRequirement = getHostRequirement(split);
-            PartitionAssignment partitionAssignment = openAssignments.get(hostRequirement);
+            NodeRequirements nodeRequirements = getNodeRequirements(split);
+            PartitionAssignment partitionAssignment = openAssignments.get(nodeRequirements);
             long splitSizeInBytes = getSplitSizeInBytes(split);
             if (partitionAssignment != null && ((partitionAssignment.getAssignedDataSizeInBytes() + splitSizeInBytes > roundedTargetPartitionSizeInBytes)
                     || (partitionAssignment.getAssignedSplitCount() + 1 > maxTaskSplitCount))) {
@@ -225,7 +227,7 @@ class ArbitraryDistributionSplitAssigner
                     assignment.sealPartition(partitionAssignment.getPartitionId());
                 }
                 partitionAssignment = null;
-                openAssignments.remove(hostRequirement);
+                openAssignments.remove(nodeRequirements);
 
                 adaptiveCounter++;
                 if (adaptiveCounter >= adaptiveGrowthPeriod) {
@@ -239,17 +241,17 @@ class ArbitraryDistributionSplitAssigner
             if (partitionAssignment == null) {
                 partitionAssignment = new PartitionAssignment(nextPartitionId++);
                 allAssignments.add(partitionAssignment);
-                openAssignments.put(hostRequirement, partitionAssignment);
+                openAssignments.put(nodeRequirements, partitionAssignment);
                 assignment.addPartition(new Partition(
                         partitionAssignment.getPartitionId(),
-                        new NodeRequirements(catalogRequirement, hostRequirement.map(ImmutableSet::of).orElseGet(ImmutableSet::of))));
+                        nodeRequirements));
 
                 for (PlanNodeId replicatedSourceId : replicatedSources) {
                     assignment.updatePartition(new PartitionUpdate(
                             partitionAssignment.getPartitionId(),
                             replicatedSourceId,
                             false,
-                            singleSourcePartition(SINGLE_SOURCE_PARTITION_ID, replicatedSplits.get(replicatedSourceId)),
+                            singleSourcePartition(replicatedSplits.get(replicatedSourceId)),
                             completedSources.contains(replicatedSourceId)));
                 }
             }
@@ -257,7 +259,7 @@ class ArbitraryDistributionSplitAssigner
                     partitionAssignment.getPartitionId(),
                     planNodeId,
                     true,
-                    singleSourcePartition(SINGLE_SOURCE_PARTITION_ID, ImmutableList.of(split)),
+                    singleSourcePartition(ImmutableList.of(split)),
                     false));
             partitionAssignment.assignSplit(splitSizeInBytes);
         }
@@ -270,13 +272,13 @@ class ArbitraryDistributionSplitAssigner
             if (allAssignments.isEmpty()) {
                 // at least a single partition is expected to be created
                 allAssignments.add(new PartitionAssignment(0));
-                assignment.addPartition(new Partition(0, new NodeRequirements(catalogRequirement, ImmutableSet.of())));
+                assignment.addPartition(new Partition(0, new NodeRequirements(catalogRequirement, ImmutableSet.of(), true)));
                 for (PlanNodeId replicatedSourceId : replicatedSources) {
                     assignment.updatePartition(new PartitionUpdate(
                             0,
                             replicatedSourceId,
                             false,
-                            singleSourcePartition(SINGLE_SOURCE_PARTITION_ID, replicatedSplits.get(replicatedSourceId)),
+                            singleSourcePartition(replicatedSplits.get(replicatedSourceId)),
                             true));
                 }
                 for (PlanNodeId partitionedSourceId : partitionedSources) {
@@ -314,30 +316,63 @@ class ArbitraryDistributionSplitAssigner
         return assignment.build();
     }
 
-    private Optional<HostAddress> getHostRequirement(Split split)
+    @Override
+    public String toString()
     {
-        if (split.getConnectorSplit().isRemotelyAccessible()) {
-            return Optional.empty();
+        return toStringHelper(this)
+                .add("catalogRequirement", catalogRequirement)
+                .add("partitionedSources", partitionedSources)
+                .add("replicatedSources", replicatedSources)
+                .add("allSources", allSources)
+                .add("adaptiveGrowthPeriod", adaptiveGrowthPeriod)
+                .add("adaptiveGrowthFactor", adaptiveGrowthFactor)
+                .add("minTargetPartitionSizeInBytes", minTargetPartitionSizeInBytes)
+                .add("maxTargetPartitionSizeInBytes", maxTargetPartitionSizeInBytes)
+                .add("standardSplitSizeInBytes", standardSplitSizeInBytes)
+                .add("maxTaskSplitCount", maxTaskSplitCount)
+                .add("nextPartitionId", nextPartitionId)
+                .add("adaptiveCounter", adaptiveCounter)
+                .add("targetPartitionSizeInBytes", targetPartitionSizeInBytes)
+                .add("roundedTargetPartitionSizeInBytes", roundedTargetPartitionSizeInBytes)
+                .add("allAssignments", allAssignments)
+                .add("openAssignments", openAssignments)
+                .add("completedSources", completedSources)
+                .add("replicatedSplits.size()", replicatedSplits.size())
+                .add("noMoreReplicatedSplits", noMoreReplicatedSplits)
+                .toString();
+    }
+
+    /**
+     * Ranks the desirability of selecting a node for the next split assignment.  Lower is better.
+     */
+    private long rank(HostAddress address)
+    {
+        // The node-to-split map can have two entries for this address: one for remotely accessible splits and one for non remotely accessible splits.
+        PartitionAssignment flexEntry = openAssignments.get(new NodeRequirements(catalogRequirement, ImmutableSet.of(address), true));
+        PartitionAssignment rigidEntry = openAssignments.get(new NodeRequirements(catalogRequirement, ImmutableSet.of(address), false));
+        if (flexEntry == null && rigidEntry == null) {
+            return -1; // Most desirable: an unassigned node.
         }
-        List<HostAddress> addresses = split.getAddresses();
-        checkArgument(!addresses.isEmpty(), "split is not remotely accessible but the list of hosts is empty: %s", split);
-        HostAddress selectedAddress = null;
-        long selectedAssignmentDataSize = Long.MAX_VALUE;
-        for (HostAddress address : addresses) {
-            PartitionAssignment assignment = openAssignments.get(Optional.of(address));
-            if (assignment == null) {
-                // prioritize unused addresses
-                selectedAddress = address;
-                break;
-            }
-            if (assignment.getAssignedDataSizeInBytes() < selectedAssignmentDataSize) {
-                // otherwise prioritize the smallest assignment
-                selectedAddress = address;
-                selectedAssignmentDataSize = assignment.getAssignedDataSizeInBytes();
-            }
+        // The more data assigned to this node, the less desirable it is.
+        if (flexEntry == null) {
+            return rigidEntry.getAssignedDataSizeInBytes();
         }
-        verify(selectedAddress != null, "selectedAddress is null");
-        return Optional.of(selectedAddress);
+        if (rigidEntry == null) {
+            return flexEntry.getAssignedDataSizeInBytes();
+        }
+        return flexEntry.getAssignedDataSizeInBytes() + rigidEntry.getAssignedDataSizeInBytes();
+    }
+
+    private NodeRequirements getNodeRequirements(Split split)
+    {
+        if (split.getAddresses().isEmpty()) {
+            checkArgument(split.isRemotelyAccessible(), "split is not remotely accessible but the list of hosts is empty: %s", split);
+            return new NodeRequirements(catalogRequirement, ImmutableSet.of(), true);
+        }
+        HostAddress selectedAddress = split.getAddresses().stream()
+                .min(Comparator.comparing(this::rank))
+                .orElseThrow();
+        return new NodeRequirements(catalogRequirement, ImmutableSet.of(selectedAddress), split.isRemotelyAccessible());
     }
 
     private long getSplitSizeInBytes(Split split)
@@ -395,6 +430,17 @@ class ArbitraryDistributionSplitAssigner
         public void setFull(boolean full)
         {
             this.full = full;
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("partitionId", partitionId)
+                    .add("assignedDataSizeInBytes", assignedDataSizeInBytes)
+                    .add("assignedSplitCount", assignedSplitCount)
+                    .add("full", full)
+                    .toString();
         }
     }
 }

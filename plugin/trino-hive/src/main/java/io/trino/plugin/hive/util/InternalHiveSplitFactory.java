@@ -14,7 +14,9 @@
 package io.trino.plugin.hive.util;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
+import io.trino.metastore.HiveTypeName;
 import io.trino.plugin.hive.AcidInfo;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HivePartitionKey;
@@ -23,7 +25,6 @@ import io.trino.plugin.hive.HiveSplit.BucketConversion;
 import io.trino.plugin.hive.HiveStorageFormat;
 import io.trino.plugin.hive.InternalHiveSplit;
 import io.trino.plugin.hive.InternalHiveSplit.InternalHiveBlock;
-import io.trino.plugin.hive.TableToPartitionMapping;
 import io.trino.plugin.hive.fs.BlockLocation;
 import io.trino.plugin.hive.fs.TrinoFileStatus;
 import io.trino.plugin.hive.orc.OrcPageSourceFactory;
@@ -38,7 +39,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 import java.util.function.BooleanSupplier;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -51,10 +51,10 @@ public class InternalHiveSplitFactory
 {
     private final String partitionName;
     private final HiveStorageFormat storageFormat;
-    private final Properties strippedSchema;
+    private final Map<String, String> strippedSchema;
     private final List<HivePartitionKey> partitionKeys;
     private final Optional<Domain> pathDomain;
-    private final TableToPartitionMapping tableToPartitionMapping;
+    private final Map<Integer, HiveTypeName> hiveColumnCoercions;
     private final BooleanSupplier partitionMatchSupplier;
     private final Optional<BucketConversion> bucketConversion;
     private final Optional<HiveSplit.BucketValidation> bucketValidation;
@@ -65,11 +65,11 @@ public class InternalHiveSplitFactory
     public InternalHiveSplitFactory(
             String partitionName,
             HiveStorageFormat storageFormat,
-            Properties schema,
+            Map<String, String> schema,
             List<HivePartitionKey> partitionKeys,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             BooleanSupplier partitionMatchSupplier,
-            TableToPartitionMapping tableToPartitionMapping,
+            Map<Integer, HiveTypeName> hiveColumnCoercions,
             Optional<BucketConversion> bucketConversion,
             Optional<HiveSplit.BucketValidation> bucketValidation,
             DataSize minimumTargetSplitSize,
@@ -82,7 +82,7 @@ public class InternalHiveSplitFactory
         this.partitionKeys = requireNonNull(partitionKeys, "partitionKeys is null");
         pathDomain = getPathDomain(requireNonNull(effectivePredicate, "effectivePredicate is null"));
         this.partitionMatchSupplier = requireNonNull(partitionMatchSupplier, "partitionMatchSupplier is null");
-        this.tableToPartitionMapping = requireNonNull(tableToPartitionMapping, "tableToPartitionMapping is null");
+        this.hiveColumnCoercions = ImmutableMap.copyOf(requireNonNull(hiveColumnCoercions, "hiveColumnCoercions is null"));
         this.bucketConversion = requireNonNull(bucketConversion, "bucketConversion is null");
         this.bucketValidation = requireNonNull(bucketValidation, "bucketValidation is null");
         this.forceLocalScheduling = forceLocalScheduling;
@@ -91,7 +91,7 @@ public class InternalHiveSplitFactory
         checkArgument(minimumTargetSplitSizeInBytes > 0, "minimumTargetSplitSize must be > 0, found: %s", minimumTargetSplitSize);
     }
 
-    private static Properties stripUnnecessaryProperties(Properties schema)
+    private static Map<String, String> stripUnnecessaryProperties(Map<String, String> schema)
     {
         // Sending the full schema with every split is costly and can be avoided for formats supported natively
         schema = OrcPageSourceFactory.stripUnnecessaryProperties(schema);
@@ -192,7 +192,7 @@ public class InternalHiveSplitFactory
                 tableBucketNumber,
                 splittable,
                 forceLocalScheduling && allBlocksHaveAddress(blocks),
-                tableToPartitionMapping,
+                hiveColumnCoercions,
                 bucketConversion,
                 bucketValidation,
                 acidInfo,
@@ -211,11 +211,11 @@ public class InternalHiveSplitFactory
                 start,
                 blocks.get(0).getStart());
         checkArgument(
-                start + length == blocks.get(blocks.size() - 1).getEnd(),
+                start + length == blocks.getLast().getEnd(),
                 "Split (%s) end (%s) does not match last block end (%s)",
                 path,
                 start + length,
-                blocks.get(blocks.size() - 1).getEnd());
+                blocks.getLast().getEnd());
         for (int i = 1; i < blocks.size(); i++) {
             checkArgument(
                     blocks.get(i - 1).getEnd() == blocks.get(i).getStart(),

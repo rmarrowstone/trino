@@ -126,10 +126,10 @@ public class BenchmarkPageProcessor
             pageBuilder.declarePosition();
 
             LineItem lineItem = iterator.next();
-            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(EXTENDED_PRICE), lineItem.getExtendedPrice());
-            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(DISCOUNT), lineItem.getDiscount());
+            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(EXTENDED_PRICE), lineItem.extendedPrice());
+            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(DISCOUNT), lineItem.discount());
             VARCHAR.writeSlice(pageBuilder.getBlockBuilder(SHIP_DATE), Slices.wrappedBuffer(LineItemColumn.SHIP_DATE.getString(lineItem).getBytes(UTF_8)));
-            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(QUANTITY), lineItem.getQuantity());
+            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(QUANTITY), lineItem.quantity());
         }
         return pageBuilder.build();
     }
@@ -179,7 +179,7 @@ public class BenchmarkPageProcessor
             VariableWidthBlock leftBlock = (VariableWidthBlock) left.getUnderlyingValueBlock();
             Slice leftSlice = leftBlock.getRawSlice();
             int leftOffset = leftBlock.getRawSliceOffset(leftPosition);
-            int leftLength = left.getSliceLength(leftPosition);
+            int leftLength = leftBlock.getSliceLength(leftPosition);
             return leftSlice.compareTo(leftOffset, leftLength, right, 0, right.length()) < 0;
         }
 
@@ -188,7 +188,7 @@ public class BenchmarkPageProcessor
             VariableWidthBlock leftBlock = (VariableWidthBlock) left.getUnderlyingValueBlock();
             Slice leftSlice = leftBlock.getRawSlice();
             int leftOffset = leftBlock.getRawSliceOffset(leftPosition);
-            int leftLength = left.getSliceLength(leftPosition);
+            int leftLength = leftBlock.getSliceLength(leftPosition);
             return leftSlice.compareTo(leftOffset, leftLength, right, 0, right.length()) >= 0;
         }
     }
@@ -203,30 +203,35 @@ public class BenchmarkPageProcessor
         return new SpecialForm(
                 Form.AND,
                 BOOLEAN,
-                new CallExpression(
-                        functionResolution.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(VARCHAR, VARCHAR)),
-                        ImmutableList.of(constant(MIN_SHIP_DATE, VARCHAR), field(SHIP_DATE, VARCHAR))),
-                new SpecialForm(
-                        Form.AND,
-                        BOOLEAN,
-                        new CallExpression(
-                                functionResolution.resolveOperator(LESS_THAN, ImmutableList.of(VARCHAR, VARCHAR)),
-                                ImmutableList.of(field(SHIP_DATE, VARCHAR), constant(MAX_SHIP_DATE, VARCHAR))),
-                        new SpecialForm(
-                                Form.AND,
-                                BOOLEAN,
+                ImmutableList.of(
+                    new CallExpression(
+                            functionResolution.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(VARCHAR, VARCHAR)),
+                            ImmutableList.of(constant(MIN_SHIP_DATE, VARCHAR), field(SHIP_DATE, VARCHAR))),
+                    new SpecialForm(
+                            Form.AND,
+                            BOOLEAN,
+                            ImmutableList.of(
                                 new CallExpression(
-                                        functionResolution.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(DOUBLE, DOUBLE)),
-                                        ImmutableList.of(constant(0.05, DOUBLE), field(DISCOUNT, DOUBLE))),
+                                        functionResolution.resolveOperator(LESS_THAN, ImmutableList.of(VARCHAR, VARCHAR)),
+                                        ImmutableList.of(field(SHIP_DATE, VARCHAR), constant(MAX_SHIP_DATE, VARCHAR))),
                                 new SpecialForm(
                                         Form.AND,
                                         BOOLEAN,
-                                        new CallExpression(
-                                                functionResolution.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(DOUBLE, DOUBLE)),
-                                                ImmutableList.of(field(DISCOUNT, DOUBLE), constant(0.07, DOUBLE))),
-                                        new CallExpression(
-                                                functionResolution.resolveOperator(LESS_THAN, ImmutableList.of(DOUBLE, DOUBLE)),
-                                                ImmutableList.of(field(QUANTITY, DOUBLE), constant(24.0, DOUBLE)))))));
+                                        ImmutableList.of(
+                                            new CallExpression(
+                                                    functionResolution.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(DOUBLE, DOUBLE)),
+                                                    ImmutableList.of(constant(0.05, DOUBLE), field(DISCOUNT, DOUBLE))),
+                                            new SpecialForm(
+                                                    Form.AND,
+                                                    BOOLEAN,
+                                                    ImmutableList.of(
+                                                        new CallExpression(
+                                                                functionResolution.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(DOUBLE, DOUBLE)),
+                                                                ImmutableList.of(field(DISCOUNT, DOUBLE), constant(0.07, DOUBLE))),
+                                                        new CallExpression(
+                                                                functionResolution.resolveOperator(LESS_THAN, ImmutableList.of(DOUBLE, DOUBLE)),
+                                                                ImmutableList.of(field(QUANTITY, DOUBLE), constant(24.0, DOUBLE)))), ImmutableList.of())), ImmutableList.of())), ImmutableList.of())),
+                ImmutableList.of());
     }
 
     private static RowExpression createProjectExpression(TestingFunctionResolution functionResolution)

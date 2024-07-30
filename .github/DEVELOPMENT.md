@@ -183,6 +183,7 @@ Disable the following inspections:
 
 - ``Java | Performance | Call to 'Arrays.asList()' with too few arguments``,
 - ``Java | Abstraction issues | 'Optional' used as field or parameter type``,
+- ``Java | Code style issues | Local variable or parameter can be 'final'``,
 - ``Java | Data flow | Boolean method is always inverted``.
 
 Update the following inspections:
@@ -274,17 +275,3 @@ Once it is time to release, the release process is kicked off. A code freeze is
 announced on the Trino Slack in the #releases channel, and then a maintainer
 utilizes the [release scripts](https://github.com/trinodb/release-scripts) to
 update Trino to the next version.
-
-## CI pipeline
-
-### Maven offline mode
-
-The CI pipeline runs most Maven commands in offline mode to avoid dependency on Maven Central.
-
-Before calling Maven a job should execute the `./.github/actions/setup` compound action to
-download all the dependencies it will require. 
-
-It uses two complementary tools to detect and download Maven dependencies, 
-but some plugin dependencies are not expressed in the tree hierarchy.
-
-These dynamic dependencies must be listed as `<DynamicDependency>` entries in the root `pom.xml`.

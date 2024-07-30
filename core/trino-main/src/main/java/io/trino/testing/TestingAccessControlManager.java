@@ -23,12 +23,13 @@ import io.trino.plugin.base.security.DefaultSystemAccessControl;
 import io.trino.security.AccessControlConfig;
 import io.trino.security.AccessControlManager;
 import io.trino.security.SecurityContext;
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.ViewExpression;
-import io.trino.spi.type.Type;
 import io.trino.transaction.TransactionManager;
 
 import java.security.Principal;
@@ -39,6 +40,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -268,13 +270,13 @@ public class TestingAccessControlManager
     }
 
     @Override
-    public void checkCanExecuteQuery(Identity identity)
+    public void checkCanExecuteQuery(Identity identity, QueryId queryId)
     {
         if (shouldDenyPrivilege(identity.getUser(), "query", EXECUTE_QUERY)) {
             denyExecuteQuery();
         }
         if (denyPrivileges.isEmpty()) {
-            super.checkCanExecuteQuery(identity);
+            super.checkCanExecuteQuery(identity, queryId);
         }
     }
 
@@ -348,7 +350,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanShowCreateTable(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), SHOW_CREATE_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), SHOW_CREATE_TABLE)) {
             denyShowCreateTable(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -359,10 +361,10 @@ public class TestingAccessControlManager
     @Override
     public void checkCanCreateTable(SecurityContext context, QualifiedObjectName tableName, Map<String, Object> properties)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), CREATE_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), CREATE_TABLE)) {
             denyCreateTable(tableName.toString());
         }
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), SET_TABLE_PROPERTIES)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), SET_TABLE_PROPERTIES)) {
             denySetTableProperties(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -373,7 +375,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanDropTable(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), DROP_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), DROP_TABLE)) {
             denyDropTable(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -384,7 +386,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanRenameTable(SecurityContext context, QualifiedObjectName tableName, QualifiedObjectName newTableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), RENAME_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), RENAME_TABLE)) {
             denyRenameTable(tableName.toString(), newTableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -395,7 +397,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanSetTableProperties(SecurityContext context, QualifiedObjectName tableName, Map<String, Optional<Object>> properties)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), SET_TABLE_PROPERTIES)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), SET_TABLE_PROPERTIES)) {
             denySetTableProperties(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -406,7 +408,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanSetTableComment(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), COMMENT_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), COMMENT_TABLE)) {
             denyCommentTable(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -417,7 +419,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanSetViewComment(SecurityContext context, QualifiedObjectName viewName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.getObjectName(), COMMENT_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.objectName(), COMMENT_VIEW)) {
             denyCommentView(viewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -428,7 +430,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanSetColumnComment(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), COMMENT_COLUMN)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), COMMENT_COLUMN)) {
             denyCommentColumn(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -439,7 +441,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanAddColumns(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), ADD_COLUMN)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), ADD_COLUMN)) {
             denyAddColumn(tableName.toString());
         }
         super.checkCanAddColumns(context, tableName);
@@ -448,7 +450,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanDropColumn(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), DROP_COLUMN)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), DROP_COLUMN)) {
             denyDropColumn(tableName.toString());
         }
         super.checkCanDropColumn(context, tableName);
@@ -457,7 +459,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanRenameColumn(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), RENAME_COLUMN)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), RENAME_COLUMN)) {
             denyRenameColumn(tableName.toString());
         }
         super.checkCanRenameColumn(context, tableName);
@@ -466,7 +468,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanAlterColumn(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), ALTER_COLUMN)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), ALTER_COLUMN)) {
             denyAlterColumn(tableName.toString());
         }
         super.checkCanAlterColumn(context, tableName);
@@ -475,7 +477,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanInsertIntoTable(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), INSERT_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), INSERT_TABLE)) {
             denyInsertTable(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -486,7 +488,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanDeleteFromTable(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), DELETE_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), DELETE_TABLE)) {
             denyDeleteTable(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -497,7 +499,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanTruncateTable(SecurityContext context, QualifiedObjectName tableName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), TRUNCATE_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), TRUNCATE_TABLE)) {
             denyTruncateTable(tableName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -508,7 +510,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanUpdateTableColumns(SecurityContext context, QualifiedObjectName tableName, Set<String> updatedColumnNames)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), UPDATE_TABLE)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), UPDATE_TABLE)) {
             denyUpdateTableColumns(tableName.toString(), updatedColumnNames);
         }
         if (denyPrivileges.isEmpty()) {
@@ -519,7 +521,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanCreateView(SecurityContext context, QualifiedObjectName viewName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.getObjectName(), CREATE_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.objectName(), CREATE_VIEW)) {
             denyCreateView(viewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -530,7 +532,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanRenameView(SecurityContext context, QualifiedObjectName viewName, QualifiedObjectName newViewName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.getObjectName(), RENAME_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.objectName(), RENAME_VIEW)) {
             denyRenameView(viewName.toString(), newViewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -541,7 +543,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanDropView(SecurityContext context, QualifiedObjectName viewName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.getObjectName(), DROP_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.objectName(), DROP_VIEW)) {
             denyDropView(viewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -550,23 +552,23 @@ public class TestingAccessControlManager
     }
 
     @Override
-    public void checkCanSetSystemSessionProperty(Identity identity, String propertyName)
+    public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName)
     {
         if (shouldDenyPrivilege(identity.getUser(), propertyName, SET_SESSION)) {
             denySetSystemSessionProperty(propertyName);
         }
         if (denyPrivileges.isEmpty()) {
-            super.checkCanSetSystemSessionProperty(identity, propertyName);
+            super.checkCanSetSystemSessionProperty(identity, queryId, propertyName);
         }
     }
 
     @Override
     public void checkCanCreateViewWithSelectFromColumns(SecurityContext context, QualifiedObjectName tableName, Set<String> columnNames)
     {
-        if (!denyIdentityTable.test(context.getIdentity(), tableName.getObjectName())) {
+        if (!denyIdentityTable.test(context.getIdentity(), tableName.objectName())) {
             denyCreateViewWithSelect(tableName.toString(), context.getIdentity());
         }
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), CREATE_VIEW_WITH_SELECT_COLUMNS)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), CREATE_VIEW_WITH_SELECT_COLUMNS)) {
             denyCreateViewWithSelect(tableName.toString(), context.getIdentity());
         }
         if (denyPrivileges.isEmpty() && denyIdentityTable.equals(IDENTITY_TABLE_TRUE)) {
@@ -577,7 +579,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanCreateMaterializedView(SecurityContext context, QualifiedObjectName materializedViewName, Map<String, Object> properties)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.getObjectName(), CREATE_MATERIALIZED_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.objectName(), CREATE_MATERIALIZED_VIEW)) {
             denyCreateMaterializedView(materializedViewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -588,7 +590,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanRefreshMaterializedView(SecurityContext context, QualifiedObjectName materializedViewName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.getObjectName(), REFRESH_MATERIALIZED_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.objectName(), REFRESH_MATERIALIZED_VIEW)) {
             denyRefreshMaterializedView(materializedViewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -599,7 +601,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanDropMaterializedView(SecurityContext context, QualifiedObjectName materializedViewName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.getObjectName(), DROP_MATERIALIZED_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.objectName(), DROP_MATERIALIZED_VIEW)) {
             denyDropMaterializedView(materializedViewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -610,7 +612,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanRenameMaterializedView(SecurityContext context, QualifiedObjectName viewName, QualifiedObjectName newViewName)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.getObjectName(), RENAME_MATERIALIZED_VIEW)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), viewName.objectName(), RENAME_MATERIALIZED_VIEW)) {
             denyRenameMaterializedView(viewName.toString(), newViewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -621,7 +623,7 @@ public class TestingAccessControlManager
     @Override
     public void checkCanSetMaterializedViewProperties(SecurityContext context, QualifiedObjectName materializedViewName, Map<String, Optional<Object>> properties)
     {
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.getObjectName(), SET_MATERIALIZED_VIEW_PROPERTIES)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), materializedViewName.objectName(), SET_MATERIALIZED_VIEW_PROPERTIES)) {
             denySetMaterializedViewProperties(materializedViewName.toString());
         }
         if (denyPrivileges.isEmpty()) {
@@ -641,18 +643,11 @@ public class TestingAccessControlManager
     }
 
     @Override
-    public Set<String> filterColumns(SecurityContext context, CatalogSchemaTableName table, Set<String> columns)
-    {
-        Set<String> visibleColumns = localFilterColumns(context, table.getSchemaTableName(), columns);
-        return super.filterColumns(context, table, visibleColumns);
-    }
-
-    @Override
     public Map<SchemaTableName, Set<String>> filterColumns(SecurityContext context, String catalogName, Map<SchemaTableName, Set<String>> tableColumns)
     {
         tableColumns = tableColumns.entrySet().stream()
                 .collect(toImmutableMap(
-                        Map.Entry::getKey,
+                        Entry::getKey,
                         e -> localFilterColumns(context, e.getKey(), e.getValue())));
         return super.filterColumns(context, catalogName, tableColumns);
     }
@@ -682,14 +677,14 @@ public class TestingAccessControlManager
     @Override
     public void checkCanSelectFromColumns(SecurityContext context, QualifiedObjectName tableName, Set<String> columns)
     {
-        if (!denyIdentityTable.test(context.getIdentity(), tableName.getObjectName())) {
+        if (!denyIdentityTable.test(context.getIdentity(), tableName.objectName())) {
             denySelectColumns(tableName.toString(), columns);
         }
-        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName(), SELECT_COLUMN)) {
+        if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName(), SELECT_COLUMN)) {
             denySelectColumns(tableName.toString(), columns);
         }
         for (String column : columns) {
-            if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.getObjectName() + "." + column, SELECT_COLUMN)) {
+            if (shouldDenyPrivilege(context.getIdentity().getUser(), tableName.objectName() + "." + column, SELECT_COLUMN)) {
                 denySelectColumns(tableName.toString(), columns);
             }
         }
@@ -744,13 +739,16 @@ public class TestingAccessControlManager
     }
 
     @Override
-    public Optional<ViewExpression> getColumnMask(SecurityContext context, QualifiedObjectName tableName, String column, Type type)
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(SecurityContext context, QualifiedObjectName tableName, List<ColumnSchema> columns)
     {
-        ViewExpression mask = columnMasks.get(new ColumnMaskKey(context.getIdentity().getUser(), tableName, column));
-        if (mask != null) {
-            return Optional.of(mask);
-        }
-        return super.getColumnMask(context, tableName, column, type);
+        Map<ColumnSchema, ViewExpression> superResult = super.getColumnMasks(context, tableName, columns);
+        return columns.stream()
+                .flatMap(column ->
+                    Optional.ofNullable(columnMasks.get(new ColumnMaskKey(context.getIdentity().getUser(), tableName, column.getName())))
+                            .or(() -> Optional.ofNullable(superResult.get(column)))
+                            .map(viewExpression -> Map.entry(column, viewExpression))
+                            .stream())
+                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     private boolean shouldDenyPrivilege(String actorName, String entityName, TestingPrivilegeType verb)

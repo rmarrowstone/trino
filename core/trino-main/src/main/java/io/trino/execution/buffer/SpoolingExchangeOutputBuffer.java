@@ -195,11 +195,13 @@ public class SpoolingExchangeOutputBuffer
         for (Slice page : pages) {
             dataSizeInBytes += getSerializedPageUncompressedSizeInBytes(page);
             sink.add(partition, page);
-            totalRowsAdded.addAndGet(getSerializedPagePositionCount(page));
+            int serializedPagePositionCount = getSerializedPagePositionCount(page);
+            totalRowsAdded.addAndGet(serializedPagePositionCount);
+            outputStats.updateRowCount(serializedPagePositionCount);
         }
         updateMemoryUsage(sink.getMemoryUsage());
         totalPagesAdded.addAndGet(pages.size());
-        outputStats.update(partition, dataSizeInBytes);
+        outputStats.updatePartitionDataSize(partition, dataSizeInBytes);
     }
 
     @Override
@@ -306,7 +308,7 @@ public class SpoolingExchangeOutputBuffer
         try {
             return memoryContextSupplier.get();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             // This is possible with races, e.g., a task is created and then immediately aborted,
             // so that the task context hasn't been created yet (as a result there's no memory context available).
             return null;

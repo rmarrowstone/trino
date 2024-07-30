@@ -17,8 +17,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import io.airlift.log.Logger;
 import io.trino.filesystem.Location;
+import io.trino.metastore.HiveMetastore;
 import io.trino.plugin.hive.containers.HiveHadoop;
-import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
@@ -38,9 +38,9 @@ import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThri
 import static io.trino.plugin.hive.containers.HiveHadoop.HIVE3_IMAGE;
 import static io.trino.plugin.iceberg.IcebergTestUtils.checkOrcFileSorting;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static io.trino.testing.TestingProperties.requiredNonEmptySystemProperty;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Objects.requireNonNull;
 import static org.apache.iceberg.FileFormat.ORC;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
@@ -61,8 +61,8 @@ public class TestIcebergGcsConnectorSmokeTest
     public TestIcebergGcsConnectorSmokeTest()
     {
         super(ORC);
-        this.gcpStorageBucket = requireNonNull(System.getProperty("testing.gcp-storage-bucket"), "gcpStorageBucket is null");
-        this.gcpCredentialKey = requireNonNull(System.getProperty("testing.gcp-credentials-key"), "gcpCredentialKey is null");
+        this.gcpStorageBucket = requiredNonEmptySystemProperty("testing.gcp-storage-bucket");
+        this.gcpCredentialKey = requiredNonEmptySystemProperty("testing.gcp-credentials-key");
         this.schema = "test_iceberg_gcs_connector_smoke_test_" + randomNameSuffix();
     }
 
@@ -94,8 +94,10 @@ public class TestIcebergGcsConnectorSmokeTest
         return IcebergQueryRunner.builder()
                 .setIcebergProperties(ImmutableMap.<String, String>builder()
                         .put("iceberg.catalog.type", "hive_metastore")
-                        .put("hive.gcs.json-key", gcpCredentials)
-                        .put("hive.metastore.uri", "thrift://" + hiveHadoop.getHiveMetastoreEndpoint())
+                        .put("fs.hadoop.enabled", "false")
+                        .put("fs.native-gcs.enabled", "true")
+                        .put("gcs.json-key", gcpCredentials)
+                        .put("hive.metastore.uri", hiveHadoop.getHiveMetastoreEndpoint().toString())
                         .put("iceberg.file-format", format.name())
                         .put("iceberg.register-table-procedure.enabled", "true")
                         .put("iceberg.writer-sort-buffer-size", "1MB")
@@ -173,7 +175,7 @@ public class TestIcebergGcsConnectorSmokeTest
         HiveMetastore metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
                         .metastoreClient(hiveHadoop.getHiveMetastoreEndpoint())
-                        .build());
+                        .build(this::closeAfterClass));
         metastore.dropTable(schema, tableName, false);
         assertThat(metastore.getTable(schema, tableName)).isEmpty();
     }
@@ -184,7 +186,7 @@ public class TestIcebergGcsConnectorSmokeTest
         HiveMetastore metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
                         .metastoreClient(hiveHadoop.getHiveMetastoreEndpoint())
-                        .build());
+                        .build(this::closeAfterClass));
         return metastore
                 .getTable(schema, tableName).orElseThrow()
                 .getParameters().get("metadata_location");

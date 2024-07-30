@@ -13,6 +13,7 @@
  */
 package io.trino.filesystem.azure;
 
+import com.azure.core.util.BinaryData;
 import com.azure.storage.blob.BlobClient;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoOutputFile;
@@ -65,17 +66,19 @@ class AzureOutputFile
     }
 
     @Override
-    public OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
+    public void createOrOverwrite(byte[] data)
             throws IOException
     {
-        return createOutputStream(memoryContext, true);
+        blobClient.getBlockBlobClient().upload(BinaryData.fromBytes(data), true);
     }
 
     @Override
-    public OutputStream createExclusive(AggregatedMemoryContext memoryContext)
+    public void createExclusive(byte[] data)
             throws IOException
     {
-        return create(memoryContext);
+        try (OutputStream outputStream = create()) {
+            outputStream.write(data);
+        }
     }
 
     private AzureOutputStream createOutputStream(AggregatedMemoryContext memoryContext, boolean overwrite)

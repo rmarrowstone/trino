@@ -37,6 +37,7 @@ import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
 import org.apache.avro.Conversions.DecimalConversion;
 import org.apache.avro.Schema;
+import org.apache.avro.SchemaParseException;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.BinaryDecoder;
@@ -51,11 +52,12 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.trino.plugin.bigquery.BigQueryType.toTrinoTimestamp;
+import static io.trino.plugin.bigquery.BigQueryTypeManager.toTrinoTimestamp;
 import static io.trino.plugin.bigquery.BigQueryUtil.toBigQueryColumnName;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -83,6 +85,7 @@ public class BigQueryStorageAvroPageSource
     private static final AvroDecimalConverter DECIMAL_CONVERTER = new AvroDecimalConverter();
 
     private final BigQueryReadClient bigQueryReadClient;
+    private final BigQueryTypeManager typeManager;
     private final BigQuerySplit split;
     private final List<String> columnNames;
     private final List<Type> columnTypes;
@@ -92,19 +95,21 @@ public class BigQueryStorageAvroPageSource
 
     public BigQueryStorageAvroPageSource(
             BigQueryReadClient bigQueryReadClient,
+            BigQueryTypeManager typeManager,
             int maxReadRowsRetries,
             BigQuerySplit split,
             List<BigQueryColumnHandle> columns)
     {
         this.bigQueryReadClient = requireNonNull(bigQueryReadClient, "bigQueryReadClient is null");
+        this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.split = requireNonNull(split, "split is null");
         this.readBytes = new AtomicLong();
         requireNonNull(columns, "columns is null");
         this.columnNames = columns.stream()
-                .map(BigQueryColumnHandle::getName)
+                .map(BigQueryColumnHandle::name)
                 .collect(toImmutableList());
         this.columnTypes = columns.stream()
-                .map(BigQueryColumnHandle::getTrinoType)
+                .map(BigQueryColumnHandle::trinoType)
                 .collect(toImmutableList());
         this.pageBuilder = new PageBuilder(columnTypes);
 
@@ -220,7 +225,7 @@ public class BigQueryStorageAvroPageSource
         }
     }
 
-    private static void writeSlice(BlockBuilder output, Type type, Object value)
+    private void writeSlice(BlockBuilder output, Type type, Object value)
     {
         if (type instanceof VarcharType) {
             type.writeSlice(output, utf8Slice(((Utf8) value).toString()));
@@ -232,6 +237,9 @@ public class BigQueryStorageAvroPageSource
             else {
                 output.appendNull();
             }
+        }
+        else if (typeManager.isJsonType(type)) {
+            type.writeSlice(output, utf8Slice(((Utf8) value).toString()));
         }
         else {
             throw new TrinoException(GENERIC_INTERNAL_ERROR, "Unhandled type for Slice: " + type.getTypeSignature());
@@ -292,7 +300,13 @@ public class BigQueryStorageAvroPageSource
         byte[] buffer = response.getAvroRows().getSerializedBinaryRows().toByteArray();
         readBytes.addAndGet(buffer.length);
         log.debug("Read %d bytes (total %d) from %s", buffer.length, readBytes.get(), split.getStreamName());
-        Schema avroSchema = new Schema.Parser().parse(split.getSchemaString());
+        Schema avroSchema;
+        try {
+            avroSchema = new Schema.Parser().parse(split.getSchemaString());
+        }
+        catch (SchemaParseException e) {
+            throw new TrinoException(GENERIC_INTERNAL_ERROR, "Invalid Avro schema: " + firstNonNull(e.getMessage(), e), e);
+        }
         return () -> new AvroBinaryIterator(avroSchema, buffer);
     }
 

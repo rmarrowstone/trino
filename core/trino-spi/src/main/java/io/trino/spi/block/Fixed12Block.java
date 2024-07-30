@@ -124,17 +124,6 @@ public final class Fixed12Block
         return positionCount;
     }
 
-    @Override
-    public long getLong(int position, int offset)
-    {
-        if (offset != 0) {
-            // If needed, we can add support for offset 4
-            throw new IllegalArgumentException("offset must be 0");
-        }
-        return getFixed12First(position);
-    }
-
-    @Override
     public int getInt(int position, int offset)
     {
         checkReadablePosition(this, position);
@@ -257,10 +246,13 @@ public final class Fixed12Block
     @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("Fixed12Block{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "Fixed12Block{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, positionOffset, positionCount);
     }
 
     /**
@@ -294,9 +286,15 @@ public final class Fixed12Block
         return values[offset + 2];
     }
 
-    int getPositionOffset()
+    int getRawOffset()
     {
         return positionOffset;
+    }
+
+    @Nullable
+    boolean[] getRawValueIsNull()
+    {
+        return valueIsNull;
     }
 
     int[] getRawValues()

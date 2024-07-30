@@ -20,10 +20,10 @@ import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.node.NodeInfo;
 import io.trino.execution.ManagedQueryExecution;
+import io.trino.memory.ClusterMemoryManager;
 import io.trino.server.ResourceGroupInfo;
 import io.trino.spi.TrinoException;
 import io.trino.spi.classloader.ThreadContextClassLoader;
-import io.trino.spi.memory.ClusterMemoryPoolManager;
 import io.trino.spi.resourcegroups.ResourceGroupConfigurationManager;
 import io.trino.spi.resourcegroups.ResourceGroupConfigurationManagerContext;
 import io.trino.spi.resourcegroups.ResourceGroupConfigurationManagerFactory;
@@ -82,10 +82,10 @@ public final class InternalResourceGroupManager<C>
     private final Map<String, ResourceGroupConfigurationManagerFactory> configurationManagerFactories = new ConcurrentHashMap<>();
 
     @Inject
-    public InternalResourceGroupManager(LegacyResourceGroupConfigurationManager legacyManager, ClusterMemoryPoolManager memoryPoolManager, NodeInfo nodeInfo, MBeanExporter exporter)
+    public InternalResourceGroupManager(LegacyResourceGroupConfigurationManager legacyManager, ClusterMemoryManager memoryPoolManager, NodeInfo nodeInfo, MBeanExporter exporter)
     {
         this.exporter = requireNonNull(exporter, "exporter is null");
-        this.configurationManagerContext = new ResourceGroupConfigurationManagerContextInstance(memoryPoolManager, nodeInfo.getEnvironment());
+        this.configurationManagerContext = new ResourceGroupConfigurationManagerContextInstance(memoryPoolManager::addChangeListener, nodeInfo.getEnvironment());
         this.legacyManager = requireNonNull(legacyManager, "legacyManager is null");
         this.configurationManager = new AtomicReference<>(cast(legacyManager));
     }
@@ -118,7 +118,7 @@ public final class InternalResourceGroupManager<C>
     public SelectionContext<C> selectGroup(SelectionCriteria criteria)
     {
         return configurationManager.get().match(criteria)
-                .orElseThrow(() -> new TrinoException(QUERY_REJECTED, "Query did not match any selection rule"));
+                .orElseThrow(() -> new TrinoException(QUERY_REJECTED, "No matching resource group found with the configured selection rules"));
     }
 
     @Override
@@ -158,7 +158,7 @@ public final class InternalResourceGroupManager<C>
         checkState(factory != null, "Resource group configuration manager '%s' is not registered", name);
 
         ResourceGroupConfigurationManager<C> configurationManager;
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
             configurationManager = cast(factory.create(ImmutableMap.copyOf(properties), configurationManagerContext));
         }
 
@@ -179,6 +179,7 @@ public final class InternalResourceGroupManager<C>
     @PreDestroy
     public void destroy()
     {
+        configurationManager.get().shutdown();
         refreshExecutor.shutdownNow();
     }
 

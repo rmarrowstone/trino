@@ -15,13 +15,15 @@ package io.trino.sql.query;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
-import io.trino.plugin.tpch.TpchConnectorFactory;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.plugin.tpch.TpchPlugin;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 
+import static io.trino.plugin.tpch.TpchConnectorFactory.TPCH_SPLITS_PER_NODE;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
@@ -42,10 +44,9 @@ public class TestInlineFunctions
                 .setSchema(TINY_SCHEMA_NAME)
                 .build();
 
-        LocalQueryRunner runner = LocalQueryRunner.builder(session)
-                .build();
-
-        runner.createCatalog(TEST_CATALOG_NAME, new TpchConnectorFactory(1), ImmutableMap.of());
+        QueryRunner runner = new StandaloneQueryRunner(session);
+        runner.installPlugin(new TpchPlugin());
+        runner.createCatalog(TEST_CATALOG_NAME, "tpch", ImmutableMap.of(TPCH_SPLITS_PER_NODE, "1"));
 
         assertions = new QueryAssertions(runner);
     }
@@ -61,32 +62,32 @@ public class TestInlineFunctions
     {
         assertThat(assertions.query(
                 """
-                WITH FUNCTION my_func(x bigint) 
-                    RETURNS bigint 
+                WITH FUNCTION my_func(x bigint)
+                    RETURNS bigint
                     RETURN x * 2
-                SELECT my_func(nationkey) 
-                FROM nation 
+                SELECT my_func(nationkey)
+                FROM nation
                 WHERE nationkey = 1
                 """))
                 .matches("VALUES BIGINT '2'");
 
         assertThat(assertions.query(
                 """
-                WITH FUNCTION my_func(x bigint) 
-                    RETURNS bigint 
+                WITH FUNCTION my_func(x bigint)
+                    RETURNS bigint
                     RETURN x * 2
-                SELECT my_func(nationkey) 
-                FROM nation 
+                SELECT my_func(nationkey)
+                FROM nation
                 WHERE nationkey >= 1
                 """))
                 .matches("SELECT nationkey * 2 FROM nation WHERE nationkey >= 1");
 
         assertThat(assertions.query(
                 """
-                WITH FUNCTION my_func(x bigint) 
-                    RETURNS bigint 
+                WITH FUNCTION my_func(x bigint)
+                    RETURNS bigint
                     RETURN x * 2
-                SELECT my_func(nationkey) 
+                SELECT my_func(nationkey)
                 FROM nation
                 """))
                 .matches("SELECT nationkey * 2 FROM nation");

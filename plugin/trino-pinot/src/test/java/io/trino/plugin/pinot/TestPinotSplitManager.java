@@ -22,7 +22,7 @@ import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.testing.TestingConnectorSession;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,9 +37,8 @@ import static io.trino.plugin.pinot.query.DynamicTableBuilder.buildFromPql;
 import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
 import static java.lang.String.format;
 import static java.util.stream.Collectors.toList;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestPinotSplitManager
         extends TestPinotQueryBase
@@ -53,17 +52,20 @@ public class TestPinotSplitManager
         SchemaTableName schemaTableName = new SchemaTableName("default", format("SELECT %s, %s FROM %s LIMIT %d", "AirlineID", "OriginStateName", "airlineStats", 100));
         DynamicTable dynamicTable = buildFromPql(pinotMetadata, schemaTableName, mockClusterInfoFetcher, TESTING_TYPE_CONVERTER);
 
-        PinotTableHandle pinotTableHandle = new PinotTableHandle("default", dynamicTable.getTableName(), TupleDomain.all(), OptionalLong.empty(), Optional.of(dynamicTable));
+        PinotTableHandle pinotTableHandle = new PinotTableHandle("default", dynamicTable.tableName(), false, TupleDomain.all(), OptionalLong.empty(), Optional.of(dynamicTable));
         List<PinotSplit> splits = getSplitsHelper(pinotTableHandle, 1, false);
         assertSplits(splits, 1, BROKER);
     }
 
-    @Test(expectedExceptions = PinotSplitManager.QueryNotAdequatelyPushedDownException.class)
+    @Test
     public void testBrokerNonShortQuery()
     {
-        PinotTableHandle pinotTableHandle = new PinotTableHandle(realtimeOnlyTable.getSchemaName(), realtimeOnlyTable.getTableName());
-        List<PinotSplit> splits = getSplitsHelper(pinotTableHandle, 1, true);
-        assertSplits(splits, 1, BROKER);
+        assertThatThrownBy(() -> {
+            PinotTableHandle pinotTableHandle = new PinotTableHandle(realtimeOnlyTable.getSchemaName(), realtimeOnlyTable.getTableName());
+            List<PinotSplit> splits = getSplitsHelper(pinotTableHandle, 1, true);
+            assertSplits(splits, 1, BROKER);
+        })
+                .isInstanceOf(PinotSplitManager.QueryNotAdequatelyPushedDownException.class);
     }
 
     @Test
@@ -97,15 +99,15 @@ public class TestPinotSplitManager
 
     private void assertSplits(List<PinotSplit> splits, int numSplitsExpected, PinotSplit.SplitType splitType)
     {
-        assertEquals(splits.size(), numSplitsExpected);
-        splits.forEach(s -> assertEquals(s.getSplitType(), splitType));
+        assertThat(splits.size()).isEqualTo(numSplitsExpected);
+        splits.forEach(s -> assertThat(s.getSplitType()).isEqualTo(splitType));
     }
 
     private void assertSegmentSplitWellFormed(PinotSplit split)
     {
-        assertEquals(split.getSplitType(), SEGMENT);
-        assertTrue(split.getSegmentHost().isPresent());
-        assertFalse(split.getSegments().isEmpty());
+        assertThat(split.getSplitType()).isEqualTo(SEGMENT);
+        assertThat(split.getSegmentHost().isPresent()).isTrue();
+        assertThat(split.getSegments().isEmpty()).isFalse();
     }
 
     public static ConnectorSession createSessionWithNumSplits(int numSegmentsPerSplit, boolean forbidSegmentQueries, PinotConfig pinotConfig)
@@ -115,8 +117,8 @@ public class TestPinotSplitManager
                 .setStart(Instant.now())
                 .setPropertyMetadata(new PinotSessionProperties(pinotConfig).getSessionProperties())
                 .setPropertyValues(ImmutableMap.<String, Object>builder()
-                        .put(PinotSessionProperties.SEGMENTS_PER_SPLIT, numSegmentsPerSplit)
-                        .put(PinotSessionProperties.FORBID_SEGMENT_QUERIES, forbidSegmentQueries)
+                        .put("segments_per_split", numSegmentsPerSplit)
+                        .put("forbid_segment_queries", forbidSegmentQueries)
                         .buildOrThrow())
                 .build();
     }

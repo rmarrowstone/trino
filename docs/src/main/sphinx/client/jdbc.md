@@ -23,14 +23,12 @@ Download {maven_download}`jdbc` and add it to the classpath of your Java applica
 
 The driver is also available from Maven Central:
 
-```{eval-rst}
-.. parsed-literal::
-
-    <dependency>
-        <groupId>io.trino</groupId>
-        <artifactId>trino-jdbc</artifactId>
-        <version>\ |version|\ </version>
-    </dependency>
+```xml
+<dependency>
+    <groupId>io.trino</groupId>
+    <artifactId>trino-jdbc</artifactId>
+    <version>|trino_version|</version>
+</dependency>
 ```
 
 We recommend using the latest version of the JDBC driver. A list of all
@@ -72,6 +70,9 @@ jdbc:trino://host:port/catalog
 jdbc:trino://host:port/catalog/schema
 ```
 
+The value for `port` is optional if Trino is available at the default HTTP port
+`80` or with `SSL=true` and the default HTTPS port `443`.
+
 The following is an example of a JDBC URL used to create a connection:
 
 ```text
@@ -88,7 +89,6 @@ classname is required.
 :::
 
 (jdbc-java-connection)=
-
 ## Connection parameters
 
 The driver supports various parameters that may be set as URL parameters,
@@ -114,7 +114,6 @@ while others are specified using properties. However, the same parameter
 may not be specified using both methods.
 
 (jdbc-parameter-reference)=
-
 ## Parameter reference
 
 :::{list-table}
@@ -137,6 +136,9 @@ may not be specified using both methods.
   - Extra information about the client.
 * - `clientTags`
   - Client tags for selecting resource groups. Example: `abc,xyz`
+* - `path`
+  - Set the default [SQL path](/sql/set-path) for the session. Useful for
+    setting a catalog and schema location for [catalog routines](routine-catalog).
 * - `traceToken`
   - Trace token for correlating requests across systems.
 * - `source`
@@ -167,6 +169,12 @@ may not be specified using both methods.
 * - `SSLKeyStoreType`
   - The type of the KeyStore. The default type is provided by the Java
     `keystore.type` security property or `jks` if none exists.
+* - `SSLUseSystemKeyStore`
+  - Set `true` to automatically use the system KeyStore based on the operating
+    system. The supported OSes are Windows and macOS. For Windows, the
+    `Windows-MY` KeyStore is selected. For macOS, the `KeychainStore`
+    KeyStore is selected. For other OSes, the default Java KeyStore is loaded.
+    The KeyStore specification can be overridden using `SSLKeyStoreType`.
 * - `SSLTrustStorePath`
   - The location of the Java TrustStore file to use to validate HTTPS server
     certificates.
@@ -241,7 +249,7 @@ may not be specified using both methods.
   - When enabled, the name patterns passed to `DatabaseMetaData` methods are
     treated as underscores. You can use this as a workaround for applications
     that do not escape schema or table names when passing them to
-    `DatabaseMetaData` methods as schema or table name patterns. :::
+    `DatabaseMetaData` methods as schema or table name patterns.
 * - `timezone`
   - Sets the time zone for the session using the [time zone
     passed](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/ZoneId.html#of(java.lang.String)).
@@ -252,3 +260,4 @@ may not be specified using both methods.
     `PREPARE <statement>` followed by `EXECUTE <statement>`. This reduces
     network overhead and uses smaller HTTP headers and requires Trino 431 or
     greater.
+:::

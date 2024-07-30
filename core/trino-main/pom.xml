@@ -5,23 +5,16 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>432-SNAPSHOT</version>
+        <version>454-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-main</artifactId>
+    <description>Trino - Engine</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-
-        <!--
-          Project's default for air.test.parallel is 'methods'. By design, 'instances' runs all the methods in the same instance in the same thread,
-          but two methods on two different instances will be running in different threads.
-          As a side effect, it prevents TestNG from initializing multiple test instances upfront, which happens with 'methods'.
-          A potential downside can be long tail single-threaded execution of a single long test class.
-          TODO (https://github.com/trinodb/trino/issues/11294) remove when we upgrade to surefire with https://issues.apache.org/jira/browse/SUREFIRE-1967
-          -->
-        <air.test.parallel>instances</air.test.parallel>
+        <!-- TODO enable @GuardedBy checks in trino-main -->
+        <trino.error-prone.guarded-by>WARN</trino.error-prone.guarded-by>
     </properties>
 
     <dependencies>
@@ -214,12 +207,6 @@
         <dependency>
             <groupId>io.airlift.discovery</groupId>
             <artifactId>discovery-server</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>javax.validation</groupId>
-                    <artifactId>validation-api</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -248,8 +235,13 @@
         </dependency>
 
         <dependency>
-            <groupId>io.trino</groupId>
-            <artifactId>re2j</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-trace</artifactId>
         </dependency>
 
         <dependency>
@@ -304,6 +296,11 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-re2j</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-spi</artifactId>
         </dependency>
 
@@ -315,6 +312,11 @@
         <dependency>
             <groupId>jakarta.annotation</groupId>
             <artifactId>jakarta.annotation-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
         </dependency>
 
         <dependency>
@@ -339,13 +341,8 @@
 
         <dependency>
             <groupId>org.apache.lucene</groupId>
-            <artifactId>lucene-analyzers-common</artifactId>
-            <version>8.11.2</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.eclipse.jetty.toolchain</groupId>
-            <artifactId>jetty-jakarta-servlet-api</artifactId>
+            <artifactId>lucene-analysis-common</artifactId>
+            <version>9.11.1</version>
         </dependency>
 
         <dependency>
@@ -387,12 +384,6 @@
         <dependency>
             <groupId>org.jetbrains</groupId>
             <artifactId>annotations</artifactId>
-            <scope>provided</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.testng</groupId>
-            <artifactId>testng</artifactId>
             <scope>provided</scope>
         </dependency>
 
@@ -506,6 +497,13 @@
             <groupId>org.junit.vintage</groupId>
             <artifactId>junit-vintage-engine</artifactId>
             <scope>test</scope>
+            <exclusions>
+                <!-- newer hamcrest is pulled in by airlift jaxrs-testing -->
+                <exclusion>
+                    <groupId>org.hamcrest</groupId>
+                    <artifactId>hamcrest-core</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -534,56 +532,96 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>**/node_modules/**</exclude>
+                    <exclude>**/webapp/src/**</exclude>
+                    <exclude>**/webapp/dist/node/**</exclude>
+                    <exclude>**/webapp-preview/public/**</exclude>
+                    <exclude>**/webapp-preview/src/**</exclude>
+                    <exclude>**/webapp-preview/*</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <dependencies>
-                    <!-- allow both JUnit and TestNG -->
-                    <dependency>
-                        <groupId>org.apache.maven.surefire</groupId>
-                        <artifactId>surefire-junit-platform</artifactId>
-                        <version>${dep.plugin.surefire.version}</version>
-                    </dependency>
-                    <dependency>
-                        <groupId>org.apache.maven.surefire</groupId>
-                        <artifactId>surefire-testng</artifactId>
-                        <version>${dep.plugin.surefire.version}</version>
-                    </dependency>
-                </dependencies>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>install node and npm</id>
+                        <goals>
+                            <goal>install-node-and-npm</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <workingDirectory>src/main/resources/webapp/src</workingDirectory>
+                            <installDirectory>src/main/resources/webapp/dist</installDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>install dependencies</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <arguments>install</arguments>
+                            <workingDirectory>src/main/resources/webapp/src</workingDirectory>
+                            <installDirectory>src/main/resources/webapp/dist</installDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>package webui</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <arguments>run package</arguments>
+                            <workingDirectory>src/main/resources/webapp/src</workingDirectory>
+                            <installDirectory>src/main/resources/webapp/dist</installDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>flow check</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <phase>verify</phase>
+                        <configuration>
+                            <arguments>run flow</arguments>
+                            <workingDirectory>src/main/resources/webapp/src</workingDirectory>
+                            <installDirectory>src/main/resources/webapp/dist</installDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>install node and npm (webapp-preview)</id>
+                        <goals>
+                            <goal>install-node-and-npm</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <workingDirectory>src/main/resources/webapp-preview</workingDirectory>
+                            <installDirectory>src/main/resources/webapp-preview/dist</installDirectory>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>install dependencies and build (webapp-preview)</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <phase>generate-resources</phase>
+                        <configuration>
+                            <arguments>run package</arguments>
+                            <workingDirectory>src/main/resources/webapp-preview</workingDirectory>
+                            <installDirectory>src/main/resources/webapp-preview/dist</installDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
-
-    <profiles>
-        <profile>
-            <id>benchmarks</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.codehaus.mojo</groupId>
-                        <artifactId>exec-maven-plugin</artifactId>
-                        <configuration>
-                            <executable>${java.home}/bin/java</executable>
-                            <arguments>
-                                <argument>-DoutputDirectory=benchmark_outputs</argument>
-                                <argument>-classpath</argument>
-                                <classpath />
-                                <argument>io.trino.benchmark.BenchmarkSuite</argument>
-                            </arguments>
-                            <classpathScope>test</classpathScope>
-                        </configuration>
-                        <executions>
-                            <execution>
-                                <id>benchmarks</id>
-                                <goals>
-                                    <goal>exec</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-    </profiles>
 </project>

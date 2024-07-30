@@ -15,6 +15,7 @@ ClickHouse      <connector/clickhouse>
 Delta Lake      <connector/delta-lake>
 Druid           <connector/druid>
 Elasticsearch   <connector/elasticsearch>
+Exasol          <connector/exasol>
 Google Sheets   <connector/googlesheets>
 Hive            <connector/hive>
 Hudi            <connector/hudi>
@@ -29,6 +30,7 @@ MariaDB         <connector/mariadb>
 Memory          <connector/memory>
 MongoDB         <connector/mongodb>
 MySQL           <connector/mysql>
+OpenSearch      <connector/opensearch>
 Oracle          <connector/oracle>
 Phoenix         <connector/phoenix>
 Pinot           <connector/pinot>
@@ -37,6 +39,7 @@ Prometheus      <connector/prometheus>
 Redis           <connector/redis>
 Redshift        <connector/redshift>
 SingleStore     <connector/singlestore>
+Snowflake       <connector/snowflake>
 SQL Server      <connector/sqlserver>
 System          <connector/system>
 Thrift          <connector/thrift>

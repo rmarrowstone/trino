@@ -17,6 +17,7 @@ import io.trino.testing.MaterializedResult;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,10 +25,11 @@ import java.util.Random;
 
 import static java.lang.Math.round;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestTDigestFunctions
 {
     private final QueryAssertions assertions = new QueryAssertions();
@@ -75,10 +77,10 @@ public class TestTDigestFunctions
                         "FROM (VALUES 0.1e0, 0.1e0, 0.1e0, 0.1e0, 10e0) T(d)"))
                 .matches("VALUES ARRAY[0.1e0, 0.1e0, 10.0e0]");
 
-        assertThatThrownBy(() -> assertions.query(
+        assertThat(assertions.query(
                 "SELECT values_at_quantiles(tdigest_agg(d), ARRAY[1e0, 0e0]) " +
                         "FROM (VALUES 0.1e0) T(d)"))
-                .hasMessage("percentiles must be sorted in increasing order");
+                .failure().hasMessage("percentiles must be sorted in increasing order");
     }
 
     @Test

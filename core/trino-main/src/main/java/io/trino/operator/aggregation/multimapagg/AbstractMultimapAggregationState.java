@@ -14,7 +14,6 @@
 package io.trino.operator.aggregation.multimapagg;
 
 import com.google.common.base.Throwables;
-import com.google.common.primitives.Ints;
 import io.trino.operator.VariableWidthData;
 import io.trino.operator.aggregation.arrayagg.FlatArrayBuilder;
 import io.trino.spi.TrinoException;
@@ -41,6 +40,7 @@ import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.operator.VariableWidthData.EMPTY_CHUNK;
 import static io.trino.operator.VariableWidthData.POINTER_SIZE;
 import static io.trino.spi.StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES;
+import static java.lang.Math.clamp;
 import static java.lang.Math.multiplyExact;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
 import static java.util.Objects.checkIndex;
@@ -77,7 +77,7 @@ public abstract class AbstractMultimapAggregationState
     private final MethodHandle keyReadFlat;
     private final MethodHandle keyWriteFlat;
     private final MethodHandle keyHashFlat;
-    private final MethodHandle keyDistinctFlatBlock;
+    private final MethodHandle keyIdenticalFlatBlock;
     private final MethodHandle keyHashBlock;
 
     private final int recordSize;
@@ -111,7 +111,7 @@ public abstract class AbstractMultimapAggregationState
             MethodHandle keyReadFlat,
             MethodHandle keyWriteFlat,
             MethodHandle hashFlat,
-            MethodHandle distinctFlatBlock,
+            MethodHandle identicalFlatBlock,
             MethodHandle keyHashBlock,
             Type valueType,
             MethodHandle valueReadFlat,
@@ -123,7 +123,7 @@ public abstract class AbstractMultimapAggregationState
         this.keyReadFlat = requireNonNull(keyReadFlat, "keyReadFlat is null");
         this.keyWriteFlat = requireNonNull(keyWriteFlat, "keyWriteFlat is null");
         this.keyHashFlat = requireNonNull(hashFlat, "hashFlat is null");
-        this.keyDistinctFlatBlock = requireNonNull(distinctFlatBlock, "distinctFlatBlock is null");
+        this.keyIdenticalFlatBlock = requireNonNull(identicalFlatBlock, "identicalFlatBlock is null");
         this.keyHashBlock = requireNonNull(keyHashBlock, "keyHashBlock is null");
 
         capacity = INITIAL_CAPACITY;
@@ -159,7 +159,7 @@ public abstract class AbstractMultimapAggregationState
         this.keyReadFlat = state.keyReadFlat;
         this.keyWriteFlat = state.keyWriteFlat;
         this.keyHashFlat = state.keyHashFlat;
-        this.keyDistinctFlatBlock = state.keyDistinctFlatBlock;
+        this.keyIdenticalFlatBlock = state.keyIdenticalFlatBlock;
         this.keyHashBlock = state.keyHashBlock;
 
         this.recordSize = state.recordSize;
@@ -191,7 +191,7 @@ public abstract class AbstractMultimapAggregationState
     private static byte[][] createRecordGroups(int capacity, int recordSize)
     {
         if (capacity < RECORDS_PER_GROUP) {
-            return new byte[][]{new byte[multiplyExact(capacity, recordSize)]};
+            return new byte[][] {new byte[multiplyExact(capacity, recordSize)]};
         }
 
         byte[][] groups = new byte[(capacity + 1) >> RECORDS_PER_GROUP_SHIFT][];
@@ -208,7 +208,7 @@ public abstract class AbstractMultimapAggregationState
                 sizeOf(control) +
                 (sizeOf(recordGroups[0]) * recordGroups.length) +
                 (variableWidthData == null ? 0 : variableWidthData.getRetainedSizeBytes()) +
-                (groupRecordIndex == null ? 0 : sizeOf(groupRecordIndex));
+                sizeOf(groupRecordIndex);
     }
 
     public void setMaxGroupId(int maxGroupId)
@@ -220,7 +220,7 @@ public abstract class AbstractMultimapAggregationState
 
         int currentSize = groupRecordIndex.length;
         if (requiredSize > currentSize) {
-            groupRecordIndex = Arrays.copyOf(groupRecordIndex, Ints.constrainToRange(requiredSize * 2, 1024, MAX_ARRAY_SIZE));
+            groupRecordIndex = Arrays.copyOf(groupRecordIndex, clamp(requiredSize * 2L, 1024, MAX_ARRAY_SIZE));
             Arrays.fill(groupRecordIndex, currentSize, groupRecordIndex.length, -1);
         }
     }
@@ -364,7 +364,7 @@ public abstract class AbstractMultimapAggregationState
         long controlMatches = match(controlVector, repeated);
         while (controlMatches != 0) {
             int bucket = bucket(vectorStartBucket + (Long.numberOfTrailingZeros(controlMatches) >>> 3));
-            if (keyNotDistinctFrom(bucket, block, position, groupId)) {
+            if (keyIdentical(bucket, block, position, groupId)) {
                 return bucket;
             }
 
@@ -417,7 +417,7 @@ public abstract class AbstractMultimapAggregationState
         }
 
         if (nextKeyId >= keyHeadPositions.length) {
-            int newSize = Ints.constrainToRange(nextKeyId * 2, 1024, MAX_ARRAY_SIZE);
+            int newSize = clamp(nextKeyId * 2L, 1024, MAX_ARRAY_SIZE);
             int oldSize = keyHeadPositions.length;
 
             keyHeadPositions = Arrays.copyOf(keyHeadPositions, newSize);
@@ -569,7 +569,7 @@ public abstract class AbstractMultimapAggregationState
         }
     }
 
-    private boolean keyNotDistinctFrom(int leftPosition, ValueBlock right, int rightPosition, int rightGroupId)
+    private boolean keyIdentical(int leftPosition, ValueBlock right, int rightPosition, int rightGroupId)
     {
         byte[] leftRecords = getRecords(leftPosition);
         int leftRecordOffset = getRecordOffset(leftPosition);
@@ -587,7 +587,7 @@ public abstract class AbstractMultimapAggregationState
         }
 
         try {
-            return !(boolean) keyDistinctFlatBlock.invokeExact(
+            return (boolean) keyIdenticalFlatBlock.invokeExact(
                     leftRecords,
                     leftRecordOffset + recordKeyOffset,
                     leftVariableWidthChunk,

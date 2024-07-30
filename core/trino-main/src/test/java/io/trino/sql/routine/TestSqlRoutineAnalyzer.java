@@ -33,8 +33,8 @@ import static io.trino.spi.StandardErrorCode.SYNTAX_ERROR;
 import static io.trino.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
 import static io.trino.testing.TestingSession.testSession;
+import static io.trino.testing.TransactionBuilder.transaction;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
-import static io.trino.transaction.TransactionBuilder.transaction;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.from;
 
@@ -59,23 +59,23 @@ class TestSqlRoutineAnalyzer
     {
         assertFails("FUNCTION test() RETURNS int CALLED ON NULL INPUT CALLED ON NULL INPUT RETURN 123")
                 .hasErrorCode(SYNTAX_ERROR)
-                .hasMessage("line 1:1: Multiple null-call clauses specified");
+                .hasMessage("line 1:50: Multiple null-call clauses specified");
 
         assertFails("FUNCTION test() RETURNS int RETURNS NULL ON NULL INPUT CALLED ON NULL INPUT RETURN 123")
                 .hasErrorCode(SYNTAX_ERROR)
-                .hasMessage("line 1:1: Multiple null-call clauses specified");
+                .hasMessage("line 1:56: Multiple null-call clauses specified");
 
         assertFails("FUNCTION test() RETURNS int COMMENT 'abc' COMMENT 'xyz' RETURN 123")
                 .hasErrorCode(SYNTAX_ERROR)
-                .hasMessage("line 1:1: Multiple comment clauses specified");
+                .hasMessage("line 1:43: Multiple comment clauses specified");
 
         assertFails("FUNCTION test() RETURNS int LANGUAGE abc LANGUAGE xyz RETURN 123")
                 .hasErrorCode(SYNTAX_ERROR)
-                .hasMessage("line 1:1: Multiple language clauses specified");
+                .hasMessage("line 1:42: Multiple language clauses specified");
 
         assertFails("FUNCTION test() RETURNS int NOT DETERMINISTIC DETERMINISTIC RETURN 123")
                 .hasErrorCode(SYNTAX_ERROR)
-                .hasMessage("line 1:1: Multiple deterministic clauses specified");
+                .hasMessage("line 1:47: Multiple deterministic clauses specified");
     }
 
     @Test
@@ -121,7 +121,7 @@ class TestSqlRoutineAnalyzer
 
         assertFails("FUNCTION test() RETURNS bigint LANGUAGE JAVASCRIPT RETURN abs(-42)")
                 .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:1: Unsupported language: JAVASCRIPT");
+                .hasMessage("line 1:41: Unsupported function language: JAVASCRIPT");
     }
 
     @Test

@@ -15,11 +15,13 @@ package io.trino.operator.output;
 
 import io.trino.spi.block.Block;
 import io.trino.spi.block.DictionaryBlock;
+import io.trino.spi.block.LazyBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.block.ValueBlock;
-import io.trino.type.BlockTypeOperators.BlockPositionIsDistinctFrom;
+import io.trino.type.BlockTypeOperators.BlockPositionIsIdentical;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrays;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import jakarta.annotation.Nullable;
 
 import java.util.Optional;
@@ -48,10 +50,11 @@ public class UnnestingPositionsAppender
 
     private final PositionsAppender delegate;
     @Nullable
-    private final BlockPositionIsDistinctFrom isDistinctFromOperator;
+    private final BlockPositionIsIdentical identicalOperator;
 
     private State state = State.UNINITIALIZED;
 
+    @Nullable
     private ValueBlock dictionary;
     private DictionaryIdsBuilder dictionaryIdsBuilder;
 
@@ -59,11 +62,11 @@ public class UnnestingPositionsAppender
     private ValueBlock rleValue;
     private int rlePositionCount;
 
-    public UnnestingPositionsAppender(PositionsAppender delegate, Optional<BlockPositionIsDistinctFrom> isDistinctFromOperator)
+    public UnnestingPositionsAppender(PositionsAppender delegate, Optional<BlockPositionIsIdentical> identicalOperator)
     {
         this.delegate = requireNonNull(delegate, "delegate is null");
         this.dictionaryIdsBuilder = new DictionaryIdsBuilder(1024);
-        this.isDistinctFromOperator = isDistinctFromOperator.orElse(null);
+        this.identicalOperator = identicalOperator.orElse(null);
     }
 
     public void append(IntArrayList positions, Block source)
@@ -72,35 +75,35 @@ public class UnnestingPositionsAppender
             return;
         }
 
-        if (source instanceof RunLengthEncodedBlock rleBlock) {
-            appendRle(rleBlock.getValue(), positions.size());
-        }
-        else if (source instanceof DictionaryBlock dictionaryBlock) {
-            ValueBlock dictionary = dictionaryBlock.getDictionary();
-            if (state == State.UNINITIALIZED) {
-                state = State.DICTIONARY;
-                this.dictionary = dictionary;
-                dictionaryIdsBuilder.appendPositions(positions, dictionaryBlock);
+        switch (source) {
+            case RunLengthEncodedBlock rleBlock -> {
+                appendRle(rleBlock.getValue(), positions.size());
             }
-            else if (state == State.DICTIONARY && this.dictionary == dictionary) {
-                dictionaryIdsBuilder.appendPositions(positions, dictionaryBlock);
-            }
-            else {
-                transitionToDirect();
-
-                int[] positionArray = new int[positions.size()];
-                for (int i = 0; i < positions.size(); i++) {
-                    positionArray[i] = dictionaryBlock.getId(positions.getInt(i));
+            case DictionaryBlock dictionaryBlock -> {
+                ValueBlock dictionary = dictionaryBlock.getDictionary();
+                if (state == State.UNINITIALIZED) {
+                    state = State.DICTIONARY;
+                    this.dictionary = dictionary;
+                    dictionaryIdsBuilder.appendPositions(positions, dictionaryBlock);
                 }
-                delegate.append(IntArrayList.wrap(positionArray), dictionary);
+                else if (state == State.DICTIONARY && this.dictionary == dictionary) {
+                    dictionaryIdsBuilder.appendPositions(positions, dictionaryBlock);
+                }
+                else {
+                    transitionToDirect();
+
+                    int[] positionArray = new int[positions.size()];
+                    for (int i = 0; i < positions.size(); i++) {
+                        positionArray[i] = dictionaryBlock.getId(positions.getInt(i));
+                    }
+                    delegate.append(IntArrayList.wrap(positionArray), dictionary);
+                }
             }
-        }
-        else if (source instanceof ValueBlock valueBlock) {
-            transitionToDirect();
-            delegate.append(positions, valueBlock);
-        }
-        else {
-            throw new IllegalArgumentException("Unsupported block type: " + source.getClass().getSimpleName());
+            case ValueBlock valueBlock -> {
+                transitionToDirect();
+                delegate.append(positions, valueBlock);
+            }
+            case LazyBlock ignore -> throw new IllegalArgumentException("Unsupported block type: " + source.getClass().getSimpleName());
         }
     }
 
@@ -113,7 +116,7 @@ public class UnnestingPositionsAppender
         if (state == State.DICTIONARY) {
             transitionToDirect();
         }
-        if (isDistinctFromOperator == null) {
+        if (identicalOperator == null) {
             transitionToDirect();
         }
 
@@ -124,7 +127,7 @@ public class UnnestingPositionsAppender
             return;
         }
         if (state == State.RLE) {
-            if (!isDistinctFromOperator.isDistinctFrom(rleValue, 0, value, 0)) {
+            if (identicalOperator.isIdentical(rleValue, 0, value, 0)) {
                 // the values match. we can just add positions.
                 rlePositionCount += positionCount;
                 return;
@@ -142,17 +145,11 @@ public class UnnestingPositionsAppender
             transitionToDirect();
         }
 
-        if (source instanceof RunLengthEncodedBlock runLengthEncodedBlock) {
-            delegate.append(0, runLengthEncodedBlock.getValue());
-        }
-        else if (source instanceof DictionaryBlock dictionaryBlock) {
-            delegate.append(dictionaryBlock.getId(position), dictionaryBlock.getDictionary());
-        }
-        else if (source instanceof ValueBlock valueBlock) {
-            delegate.append(position, valueBlock);
-        }
-        else {
-            throw new IllegalArgumentException("Unsupported block type: " + source.getClass().getSimpleName());
+        switch (source) {
+            case RunLengthEncodedBlock runLengthEncodedBlock -> delegate.append(0, runLengthEncodedBlock.getValue());
+            case DictionaryBlock dictionaryBlock -> delegate.append(dictionaryBlock.getId(position), dictionaryBlock.getDictionary());
+            case ValueBlock valueBlock -> delegate.append(position, valueBlock);
+            case LazyBlock ignore -> throw new IllegalArgumentException("Unsupported block type: " + source.getClass().getSimpleName());
         }
     }
 
@@ -206,8 +203,39 @@ public class UnnestingPositionsAppender
     public long getSizeInBytes()
     {
         return delegate.getSizeInBytes() +
-                // dictionary size is not included due to the expense of the calculation
+                // dictionary size is not included due to the expense of the calculation, but we can account for the ids size
+                (dictionaryIdsBuilder.size() * (long) Integer.BYTES) +
                 (rleValue != null ? rleValue.getSizeInBytes() : 0);
+    }
+
+    void addSizesToAccumulator(PositionsAppenderSizeAccumulator accumulator)
+    {
+        long sizeInBytes = getSizeInBytes();
+        // dictionary size is not included due to the expense of the calculation, so this will under-report for dictionaries
+        long directSizeInBytes = (rleValue == null) ? sizeInBytes : (rleValue.getSizeInBytes() * rlePositionCount);
+        accumulator.accumulate(sizeInBytes, directSizeInBytes);
+    }
+
+    public void flattenPendingDictionary()
+    {
+        if (state == State.DICTIONARY && dictionary != null) {
+            transitionToDirect();
+        }
+    }
+
+    public boolean shouldForceFlushBeforeRelease()
+    {
+        if (state == State.DICTIONARY && dictionary != null) {
+            IntOpenHashSet uniqueIdsSet = new IntOpenHashSet();
+            int[] dictionaryIds = dictionaryIdsBuilder.getDictionaryIds();
+            for (int i = 0; i < dictionaryIdsBuilder.size(); i++) {
+                // At least one position is referenced multiple times, preserve the dictionary encoding and force the current page to flush
+                if (!uniqueIdsSet.add(dictionaryIds[i])) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static class DictionaryIdsBuilder

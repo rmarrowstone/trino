@@ -78,10 +78,10 @@ public interface TrinoFileSystem
 
     /**
      * Deletes the specified file. The file location path cannot be empty, and must not end with
-     * a slash or whitespace. If the file is a director, an exception is raised.
+     * a slash or whitespace. If the file is a directory, an exception is raised. If the file does
+     * not exist, this method is a noop.
      *
      * @throws IllegalArgumentException if location is not valid for this file system
-     * @throws IOException if the file does not exist (optional) or was not deleted
      */
     void deleteFile(Location location)
             throws IOException;
@@ -90,9 +90,9 @@ public interface TrinoFileSystem
      * Delete specified files. This operation is <b>not</b> required to be atomic, so if an error
      * occurs, all, some, or, none of the files may be deleted. This operation may be faster than simply
      * looping over the locations as some file systems support batch delete operations natively.
+     * If a file does not exist, it is ignored.
      *
      * @throws IllegalArgumentException if location is not valid for this file system
-     * @throws IOException if a file does not exist (optional) or was not deleted
      */
     default void deleteFiles(Collection<Location> locations)
             throws IOException
@@ -127,6 +127,8 @@ public interface TrinoFileSystem
      * to be atomic, but it is required that if an error occurs, the source, target, or both
      * must exist with the data from the source.  This operation may or may not preserve the
      * last modified time.
+     * <p>
+     * For file systems which do not support rename (e.g. S3), this operation fails.
      *
      * @throws IllegalArgumentException if either location is not valid for this file system
      */
@@ -155,13 +157,13 @@ public interface TrinoFileSystem
 
     /**
      * Checks if a directory exists at the specified location. For all file system types,
-     * this returns <tt>true</tt> if the location is empty (the root of the file system)
+     * this returns {@code true} if the location is empty (the root of the file system)
      * or if any files exist within the directory, as determined by {@link #listFiles(Location)}.
      * Otherwise:
      * <ul>
-     * <li>For hierarchical file systems, this returns <tt>true</tt> if the
-     *     location is an empty directory, else it returns <tt>false</tt>.
-     * <li>For non-hierarchical file systems, an <tt>Optional.empty()</tt> is returned,
+     * <li>For hierarchical file systems, this returns {@code true} if the
+     *     location is an empty directory, else it returns {@code false}.
+     * <li>For non-hierarchical file systems, an {@code Optional.empty()} is returned,
      *     indicating that the file system has no concept of an empty directory.
      * </ul>
      *
@@ -194,8 +196,8 @@ public interface TrinoFileSystem
 
     /**
      * Lists all directories that are direct descendants of the specified directory.
-     * The location can be empty, which lists all directories at the root of the file system,
-     * otherwise the location otherwise the location must end with a slash.
+     * If the path is empty, all directories at the root of the file system are returned.
+     * Otherwise, the path must end with a slash.
      * If the location does not exist, an empty set is returned.
      * <p>
      * For hierarchical file systems, if the path is not a directory, an exception is raised.
