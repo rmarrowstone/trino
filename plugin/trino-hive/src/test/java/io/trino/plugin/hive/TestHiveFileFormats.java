@@ -712,6 +712,38 @@ public final class TestHiveFileFormats
                 .isReadableByPageSource(AvroPageSourceFactory::new);
     }
 
+    /**
+     * This test reflects that projected columns "work" in JSON, but
+     * there is no optimization to avoid materialization of superfluous fields
+     * in the base structures.
+     */
+    @Test(dataProvider = "rowCount")
+    public void testJsonProjectedColumns(int rowCount)
+            throws Exception
+    {
+        List<TestColumn> supportedColumns =  TEST_COLUMNS.stream()
+                .filter(TestHiveFileFormats::withoutNullMapKeyTests)
+                .toList();
+
+        List<TestColumn> regularColumns = getRegularColumns(supportedColumns);
+        List<TestColumn> partitionColumns = getPartitionColumns(supportedColumns);
+
+        // Created projected columns for all regular supported columns
+        ImmutableList.Builder<TestColumn> writeColumnsBuilder = ImmutableList.builder();
+        ImmutableList.Builder<TestColumn> readeColumnsBuilder = ImmutableList.builder();
+        generateProjectedColumns(regularColumns, writeColumnsBuilder, readeColumnsBuilder);
+
+        List<TestColumn> writeColumns = writeColumnsBuilder.addAll(partitionColumns).build();
+        List<TestColumn> readColumns = readeColumnsBuilder.addAll(partitionColumns).build();
+
+        assertThatFileFormat(JSON)
+                .withWriteColumns(writeColumns)
+                .withReadColumns(readColumns)
+                .withRowsCount(rowCount)
+                .withFileWriterFactory(fileSystemFactory -> new JsonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
+                .isReadableByPageSource(fileSystemFactory -> new JsonPageSourceFactory(fileSystemFactory, new HiveConfig()));
+    }
+
     @Test(dataProvider = "rowCount")
     public void testParquetProjectedColumns(int rowCount)
             throws Exception

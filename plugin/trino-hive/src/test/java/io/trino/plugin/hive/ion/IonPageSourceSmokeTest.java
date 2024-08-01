@@ -14,6 +14,7 @@ import io.trino.plugin.hive.orc.OrcWriterConfig;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.type.RowType;
 import io.trino.testing.TestingConnectorSession;
 import org.junit.jupiter.api.Test;
 
@@ -24,6 +25,7 @@ import java.util.List;
 
 import static io.trino.plugin.hive.TestHiveFileFormats.testPageSourceFactory;
 import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 
 /**
@@ -42,6 +44,25 @@ public class IonPageSourceSmokeTest
                         new TestHiveFileFormats.TestColumn("bar", VARCHAR, "baz", "baz")),
                 "{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }",
                 2);
+    }
+
+    /**
+     * This reflects that projected columns "work" in the IonPageSource, and they do.
+     * But... per the code comment in the IonPageSourceFactory, we are still materializing
+     * the full base struct.
+     */
+    @Test
+    public void testProjectedColumn()
+        throws IOException
+    {
+        final RowType spamType = RowType.rowType(field("eggs", INTEGER), field("not_projected", VARCHAR));
+        assertRowCount(
+                List.of(
+                        new TestHiveFileFormats.TestColumn("eggs", INTEGER, "spam", spamType, true, 12, 12, false)),
+                // TODO: you can prove the optimization is effective by changing the type of `not_projected` to explode on read:
+                //       we should be skipping it.
+                "{ spam: { not_projected: ignore, eggs: 12 } }",
+                1);
     }
 
     private void assertRowCount(List<TestHiveFileFormats.TestColumn> testColumns, String ionText, int rowCount)

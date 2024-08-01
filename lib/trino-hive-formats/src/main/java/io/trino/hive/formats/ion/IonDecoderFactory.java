@@ -82,7 +82,8 @@ public class IonDecoderFactory
         return (reader, builder) -> {
             final IonType type = reader.getType();
             if (!allowedWithNull.contains(type)) {
-                throw new IonException(String.format("Encountered value with IonType: %s, required one of ... ", type));
+                final String expected = allowedWithNull.stream().map(IonType::name).collect(Collectors.joining(", "));
+                throw new IonException(String.format("Encountered value with IonType: %s, required one of %s ", type, expected));
             }
             if (reader.isNullValue()) {
                 builder.appendNull();

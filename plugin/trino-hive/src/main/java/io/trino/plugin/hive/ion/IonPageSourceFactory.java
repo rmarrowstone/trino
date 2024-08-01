@@ -76,7 +76,21 @@ public class IonPageSourceFactory
             throw new TrinoException(HIVE_CANNOT_OPEN_SPLIT, "Split start must be 0 for Ion files");
         }
 
-        // todo: every implementation of HivePageSourceFactory has this same code
+        /**
+         * So many of the Hive readers have this same code...
+         *
+         * At least for JSON, that means they are also missing a potential
+         * optimization for reading only a subset of columns. We are as well.
+         * With this code, we will materialize the full "base" value.
+         * The "readerProjections" are effectively the base types.
+         *
+         * So we should:
+         * TODO Refactor to avoid repetition, this is simple at face value, but I think the actual issue is that the structure
+         *      is hard to work with. We need a single representation that has the full paths but reflects what's actually needed:
+         *      you need to overlay the projections on the base columns. That would likely simplify a lot of code, but that's
+         *      likely fairly invasive.
+         * TODO Optimize for reading only a subset of columns in Ion and JSON (or anything that inherits from LinePageSourceFactory).
+         */
         List<HiveColumnHandle> projectedReaderColumns = columns;
         Optional<ReaderColumns> readerProjections = projectBaseColumns(columns);
 
@@ -94,8 +108,8 @@ public class IonPageSourceFactory
             final IonReader ionReader = IonReaderBuilder
                     .standard()
                     .build(inputFile.newStream());
-            final PageBuilder pageBuilder = new PageBuilder(columns.stream().map(HiveColumnHandle::getType).toList());
-            final List<Column> decoderColumns = columns.stream()
+            final PageBuilder pageBuilder = new PageBuilder(projectedReaderColumns.stream().map(HiveColumnHandle::getType).toList());
+            final List<Column> decoderColumns = projectedReaderColumns.stream()
                     .map(hc -> new Column(hc.getName(), hc.getType(), hc.getBaseHiveColumnIndex()))
                     .toList();
             final IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
