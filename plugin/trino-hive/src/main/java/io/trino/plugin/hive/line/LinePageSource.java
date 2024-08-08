@@ -14,9 +14,11 @@
 package io.trino.plugin.hive.line;
 
 import io.trino.filesystem.Location;
+import io.trino.hive.formats.NoopType;
 import io.trino.hive.formats.line.LineBuffer;
 import io.trino.hive.formats.line.LineDeserializer;
 import io.trino.hive.formats.line.LineReader;
+import io.trino.plugin.hive.HivePageSourceProvider;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
@@ -51,7 +53,7 @@ public class LinePageSource
         this.lineBuffer = requireNonNull(lineBuffer, "lineBuffer is null");
         this.filePath = requireNonNull(filePath, "filePath is null");
 
-        this.pageBuilder = new PageBuilder(deserializer.getTypes());
+        this.pageBuilder = new PageBuilder(deserializer.getTypes().stream().map(HivePageSourceProvider::pruneMaskedFields).toList());
     }
 
     @Override

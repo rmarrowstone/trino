@@ -57,6 +57,7 @@ import static io.trino.metastore.HiveType.HIVE_LONG;
 import static io.trino.metastore.HiveType.HIVE_SHORT;
 import static io.trino.metastore.HiveType.HIVE_STRING;
 import static io.trino.metastore.HiveType.HIVE_TIMESTAMP;
+import static io.trino.metastore.HiveType.HIVE_VOID;
 import static io.trino.metastore.type.CharTypeInfo.MAX_CHAR_LENGTH;
 import static io.trino.metastore.type.TypeInfoFactory.getCharTypeInfo;
 import static io.trino.metastore.type.TypeInfoFactory.getListTypeInfo;
@@ -65,6 +66,7 @@ import static io.trino.metastore.type.TypeInfoFactory.getStructTypeInfo;
 import static io.trino.metastore.type.TypeInfoFactory.getVarcharTypeInfo;
 import static io.trino.metastore.type.VarcharTypeInfo.MAX_VARCHAR_LENGTH;
 import static io.trino.plugin.hive.HiveTimestampPrecision.DEFAULT_PRECISION;
+import static io.trino.hive.formats.NoopType.NOOP;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -172,6 +174,9 @@ public final class HiveTypeTranslator
                     type.getTypeParameters().stream()
                             .map(HiveTypeTranslator::toTypeInfo)
                             .collect(toImmutableList()));
+        }
+        if (NOOP.equals(type)) {
+            return HIVE_VOID.getTypeInfo();
         }
         throw new TrinoException(NOT_SUPPORTED, format("Unsupported Hive type: %s", type));
     }

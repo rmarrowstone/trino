@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.trino.filesystem.Location;
+import io.trino.hive.formats.NoopType;
 import io.trino.metastore.HiveType;
 import io.trino.metastore.HiveTypeName;
 import io.trino.metastore.type.TypeInfo;
@@ -28,6 +29,7 @@ import io.trino.plugin.hive.HiveSplit.BucketValidation;
 import io.trino.plugin.hive.acid.AcidTransaction;
 import io.trino.plugin.hive.coercions.CoercionUtils.CoercionContext;
 import io.trino.plugin.hive.util.HiveBucketing.BucketingVersion;
+import io.trino.plugin.hive.util.HiveTypeTranslator;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorPageSource;
@@ -41,17 +43,21 @@ import io.trino.spi.connector.EmptyPageSource;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.NullableValue;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.type.RowType;
+import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -279,7 +285,8 @@ public class HivePageSourceProvider
         HiveColumnHandle expectedColumn = (HiveColumnHandle) expected;
         HiveColumnHandle readColumn = (HiveColumnHandle) read;
 
-        checkArgument(expectedColumn.getBaseColumn().equals(readColumn.getBaseColumn()), "reader column is not valid for expected column");
+        // checkArgument(expectedColumn.getBaseColumn().equals(readColumn.getBaseColumn()), "reader column is not valid for expected column");
+        checkArgument(expectedColumn.getBaseHiveColumnIndex() == readColumn.getBaseHiveColumnIndex(), "reader column is not valid for expected column");
 
         List<Integer> expectedDereferences = expectedColumn.getHiveColumnProjectionInfo()
                 .map(HiveColumnProjectionInfo::getDereferenceIndices)
@@ -292,7 +299,30 @@ public class HivePageSourceProvider
         checkArgument(readerDereferences.size() <= expectedDereferences.size(), "Field returned by the reader should include expected field");
         checkArgument(expectedDereferences.subList(0, readerDereferences.size()).equals(readerDereferences), "Field returned by the reader should be a prefix of expected field");
 
-        return expectedDereferences.subList(readerDereferences.size(), expectedDereferences.size());
+        checkArgument(readerDereferences.isEmpty(), "reader deferences not supported yet");
+        // expectedDereferences.subList(readerDereferences.size(), expectedDereferences.size());
+        Type given = expectedColumn.getBaseColumn().getBaseType();
+        Type adapted = pruneMaskedFields(readColumn.getBaseColumn().getBaseType());
+        ImmutableList.Builder<Integer> dereferenceBuilder = ImmutableList.builder();
+        for (int i = 0; i < expectedDereferences.size(); i++) {
+            String fieldName = ((RowType)given).getFields().get(expectedDereferences.get(i)).getName().get();
+            System.err.println("fieldName: " + fieldName);
+            int found = -1;
+            int j = 0;
+            for (RowType.Field field : ((RowType)adapted).getFields()) {
+                if (field.getName().get().equals(fieldName)) {
+                    found = j;
+                    break;
+                }
+                j++;
+            }
+             // todo: step forward on both given and adapted!
+            given = ((RowType)given).getFields().get(expectedDereferences.get(i)).getType();
+            adapted = ((RowType)adapted).getFields().get(found).getType();
+
+            dereferenceBuilder.add(found);
+        }
+        return dereferenceBuilder.build();
     }
 
     public static class ColumnMapping
@@ -784,5 +814,119 @@ public class HivePageSourceProvider
 
             return prefixes.build();
         }
+    }
+
+    private sealed interface ProjectedColumn permits ProjectedPath, ProjectedField { }
+
+    private record ProjectedPath(TreeMap<Integer, ProjectedColumn> subPaths) implements ProjectedColumn { }
+
+    private record ProjectedField(HiveColumnHandle column) implements ProjectedColumn { }
+
+    public static Optional<ReaderColumns> maskedReaderColumns(List<HiveColumnHandle> columns)
+    {
+        requireNonNull(columns, "columns is null");
+
+        if (columns.stream().allMatch(HiveColumnHandle::isBaseColumn)) {
+            return Optional.empty();
+        }
+
+        TreeMap<Integer, ProjectedColumn> projectedColumns = new TreeMap<>();
+        LinkedHashMap<Integer, HiveColumnHandle> baseColumnHandles = new LinkedHashMap<>();
+        LinkedHashMap<Integer, Integer> baseColumnProjectionCounts = new LinkedHashMap<>();
+
+        for (HiveColumnHandle column : columns) {
+            Integer baseColumnOrdinal = column.getBaseHiveColumnIndex();
+            ProjectedColumn mapped = projectedColumns.computeIfAbsent(baseColumnOrdinal,
+                    _ -> column.isBaseColumn() ? new ProjectedField(column) : new ProjectedPath(new TreeMap<>()));
+            baseColumnHandles.put(baseColumnOrdinal, column.getBaseColumn());
+            baseColumnProjectionCounts.compute(baseColumnOrdinal, (_, v) -> v == null ? 1 : v + 1);
+
+            // todo: i think there's a bug here when you add a base column to what was a field, or vice versa, or just add at all hahah
+            HiveColumnProjectionInfo projectionInfo = column.getHiveColumnProjectionInfo().orElseThrow();
+            int derefCount = projectionInfo.getDereferenceIndices().size();
+            for (int i = 0; i < derefCount; i++) {
+                if (mapped instanceof ProjectedPath path) {
+                    ProjectedColumn candidate = i == derefCount - 1 ? new ProjectedField(column) : new ProjectedPath(new TreeMap<>());
+                    mapped = path.subPaths.computeIfAbsent(projectionInfo.getDereferenceIndices().get(i), _ -> candidate);
+                }
+                else {
+                    break;
+                }
+            }
+        }
+
+        /**
+         * Ok! So what I learned is that _right now_ you can't change the columns that you give to the ReaderAdapter
+         * You _can_ change the columns that you give to the HivePageSourceFactory, but uggh.
+         */
+
+        ImmutableList.Builder<HiveColumnHandle> projectedColumnHandles = ImmutableList.builder();
+        ImmutableList.Builder<Integer> outputColumnMapping = ImmutableList.builder();
+        int projectedColumnIndex = 0;
+
+        for (HiveColumnHandle baseColumnHandle : baseColumnHandles.values()) {
+            ProjectedColumn projectedColumn = projectedColumns.get(baseColumnHandle.getBaseHiveColumnIndex());
+            Type prunedType = mask(baseColumnHandle.getBaseType(), projectedColumn);
+            // todo: these don't need to be hive column handles, they just need to be mappable to the Column interface, which I guess, they could just be?
+            HiveColumnHandle projectedColumnHandle = new HiveColumnHandle(
+                    baseColumnHandle.getBaseColumnName(),
+                    baseColumnHandle.getBaseHiveColumnIndex(),
+                    HiveTypeTranslator.toHiveType(prunedType),
+                    prunedType,
+                    Optional.empty(),
+                    baseColumnHandle.getColumnType(),
+                    baseColumnHandle.getComment());
+            projectedColumnHandles.add(projectedColumnHandle);
+            for (int i = 0; i < baseColumnProjectionCounts.get(baseColumnHandle.getBaseHiveColumnIndex()); i++) {
+                outputColumnMapping.add(projectedColumnIndex);
+            }
+            projectedColumnIndex++;
+        }
+
+        return Optional.of(new ReaderColumns(projectedColumnHandles.build(), outputColumnMapping.build()));
+    }
+
+    private static Type mask(Type base, ProjectedColumn projection) {
+        if (projection instanceof ProjectedField) {
+            return base;
+        }
+        if (!(base instanceof RowType)) {
+            throw new IllegalStateException("Expected row type");
+        }
+
+        final ProjectedPath path = (ProjectedPath) projection;
+        List<RowType.Field> baseFields = ((RowType) base).getFields();
+
+        List<RowType.Field> prunedFields = new ArrayList<>(baseFields.size());
+        for (int i = 0; i < baseFields.size(); i++) {
+            final RowType.Field baseField = baseFields.get(i);
+            final ProjectedColumn column = path.subPaths.get(i);
+            if (column == null) {
+                prunedFields.add(new RowType.Field(baseField.getName(), NoopType.NOOP));
+            }
+            else {
+                prunedFields.add(new RowType.Field(baseField.getName(), mask(baseField.getType(), column)));
+            }
+        }
+        return RowType.from(prunedFields);
+    }
+
+    public static Type pruneMaskedFields(Type masked) {
+        if (NoopType.NOOP.equals(masked)) {
+            return null;
+        }
+        if (masked instanceof RowType rowType) {
+            ImmutableList.Builder<RowType.Field> prunedFields = ImmutableList.builder();
+            rowType.getFields()
+                    .forEach(field ->
+                    {
+                        Type prunedType = pruneMaskedFields(field.getType());
+                        if (prunedType != null) {
+                            prunedFields.add(new RowType.Field(field.getName(), prunedType));
+                        }
+                    });
+            return RowType.from(prunedFields.build());
+        }
+        return masked;
     }
 }

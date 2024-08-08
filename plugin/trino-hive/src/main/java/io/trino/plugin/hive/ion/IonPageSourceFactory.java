@@ -13,6 +13,7 @@ import io.trino.plugin.hive.AcidInfo;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
+import io.trino.plugin.hive.HivePageSourceProvider;
 import io.trino.plugin.hive.ReaderColumns;
 import io.trino.plugin.hive.ReaderPageSource;
 import io.trino.plugin.hive.acid.AcidTransaction;
@@ -32,7 +33,9 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.hive.formats.HiveClassNames.ION_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
+import static io.trino.plugin.hive.HivePageSourceProvider.maskedReaderColumns;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
+import static io.trino.plugin.hive.HivePageSourceProvider.pruneMaskedFields;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
 import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
@@ -89,10 +92,10 @@ public class IonPageSourceFactory
          *      is hard to work with. We need a single representation that has the full paths but reflects what's actually needed:
          *      you need to overlay the projections on the base columns. That would likely simplify a lot of code, but that's
          *      likely fairly invasive.
-         * TODO Optimize for reading only a subset of columns in Ion and JSON (or anything that inherits from LinePageSourceFactory).
+         * TODO Optimize for reading only a subset of columns in Ion and JSON (or anything that inherits from LinePageSourceFactory) and Avro
          */
         List<HiveColumnHandle> projectedReaderColumns = columns;
-        Optional<ReaderColumns> readerProjections = projectBaseColumns(columns);
+        Optional<ReaderColumns> readerProjections = maskedReaderColumns(columns);
 
         if (readerProjections.isPresent()) {
             projectedReaderColumns = readerProjections.get().get().stream()
@@ -108,7 +111,10 @@ public class IonPageSourceFactory
             final IonReader ionReader = IonReaderBuilder
                     .standard()
                     .build(inputFile.newStream());
-            final PageBuilder pageBuilder = new PageBuilder(projectedReaderColumns.stream().map(HiveColumnHandle::getType).toList());
+            final PageBuilder pageBuilder = new PageBuilder(projectedReaderColumns.stream()
+                    .map(HiveColumnHandle::getType)
+                    .map(HivePageSourceProvider::pruneMaskedFields)
+                    .toList());
             final List<Column> decoderColumns = projectedReaderColumns.stream()
                     .map(hc -> new Column(hc.getName(), hc.getType(), hc.getBaseHiveColumnIndex()))
                     .toList();

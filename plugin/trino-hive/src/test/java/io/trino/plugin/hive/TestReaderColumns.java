@@ -132,4 +132,14 @@ public class TestReaderColumns
         assertThat(readerColumns.get(2)).isEqualTo(columns.get(2));
         assertThat(readerColumns.get(3)).isEqualTo(columns.get(4));
     }
+
+    @Test
+    public void testPrunedBase()
+    {
+
+        List<HiveColumnHandle> columns = ImmutableList.of(
+                // HiveColumnHandle.createBaseColumn("outer", 0, )
+        );
+
+    }
 }

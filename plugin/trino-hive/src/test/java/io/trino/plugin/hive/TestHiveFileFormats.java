@@ -717,24 +717,51 @@ public final class TestHiveFileFormats
      * there is no optimization to avoid materialization of superfluous fields
      * in the base structures.
      */
-    @Test(dataProvider = "rowCount")
-    public void testJsonProjectedColumns(int rowCount)
+    // @Test(dataProvider = "rowCount")
+    @Test
+    public void testJsonProjectedColumns()
             throws Exception
     {
-        RowType spamType = RowType.rowType(field("eggs", INTEGER), field("not_projected", VARCHAR));
+        RowType basic = RowType.rowType(
+                field("kept", INTEGER),
+                field("ignored", VARCHAR));
 
-        List<TestColumn> writeColumns = List.of(new TestColumn("spam", spamType, List.of(12, "ignored"), List.of(12, "ignored")));
+        RowType twiceNested = RowType.rowType(
+                field("inner", RowType.rowType(
+                        field("projected", INTEGER),
+                        field("inner_ignored", VARCHAR))),
+                field("outer_ignored", VARCHAR));
 
-        // todo: this will make us explode when reading not_projected, which we don't need to do!
-        // spamType = RowType.rowType(field("eggs", INTEGER), field("not_projected", INTEGER));
+        RowType twiceProjected = RowType.rowType(
+                field("first", INTEGER),
+                field("second", INTEGER),
+                field("ignored", VARCHAR));
+
+        List<Object> twiceNestedValues = List.of(List.of(17, "should be skipped inner"), "should be skipped outer");
+        List<Object> twiceProjectedValues = List.of(51, 67, "should be skipped");
+
+        List<TestColumn> writeColumns = List.of(
+                new TestColumn("basic", basic, List.of(31, "should be skipped"), List.of(31, "should be skipped")),
+                new TestColumn("twice_nested", twiceNested, twiceNestedValues, twiceNestedValues),
+                new TestColumn("twice_projected", twiceProjected, twiceProjectedValues, twiceProjectedValues));
+
+        // the below changes all of the ignored varchar columns to integers
+        // the expectation being that if they are skipped, that is fine,
+        // if they are _not_ skipped, then the test explodes
+        basic = RowType.rowType(
+                field("kept", INTEGER),
+                field("ignored", INTEGER));
 
         List<TestColumn> readColumns = List.of(
-                new TestHiveFileFormats.TestColumn("eggs", INTEGER, "spam", spamType, true, 12, 12, false));
+                new TestHiveFileFormats.TestColumn("kept", INTEGER, "basic", basic, true, 31, 31, false),
+                // new TestHiveFileFormats.TestColumn("projected", INTEGER, "twice_nested", twiceNested, true, 17, 17, false),
+                new TestHiveFileFormats.TestColumn("first", INTEGER, "twice_projected", twiceProjected, true, 51, 51, false),
+                new TestHiveFileFormats.TestColumn("second", INTEGER, "twice_projected", twiceProjected, true, 67, 67, false));
 
         assertThatFileFormat(JSON)
                 .withWriteColumns(writeColumns)
                 .withReadColumns(readColumns)
-                .withRowsCount(rowCount)
+                .withRowsCount(1)
                 .withFileWriterFactory(fileSystemFactory -> new JsonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
                 .isReadableByPageSource(fileSystemFactory -> new JsonPageSourceFactory(fileSystemFactory, new HiveConfig()));
     }

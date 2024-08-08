@@ -21,6 +21,7 @@ import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.hive.formats.DistinctMapKeys;
 import io.trino.hive.formats.HiveFormatUtils;
+import io.trino.hive.formats.NoopType;
 import io.trino.hive.formats.line.Column;
 import io.trino.hive.formats.line.LineBuffer;
 import io.trino.hive.formats.line.LineDeserializer;
@@ -211,6 +212,7 @@ public class JsonDeserializer
                     rowType,
                     rowType.getFields().stream()
                             .map(Field::getType)
+                            .filter(t -> !t.equals(NoopType.NOOP))
                             .map(fieldType -> createDecoder(fieldType, timestampParser))
                             .collect(toImmutableList()),
                     IntUnaryOperator.identity());
@@ -664,7 +666,7 @@ public class JsonDeserializer
             super(rowType);
 
             ImmutableMap.Builder<String, Integer> fieldPositions = ImmutableMap.builder();
-            List<Field> fields = rowType.getFields();
+            List<Field> fields = rowType.getFields().stream().filter(f -> ! f.getType().equals(NoopType.NOOP)).toList();
             for (int i = 0; i < fields.size(); i++) {
                 Field field = fields.get(i);
                 fieldPositions.put(field.getName().orElseThrow().toLowerCase(Locale.ROOT), i);

@@ -42,12 +42,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.hive.formats.line.LineDeserializer.EMPTY_LINE_DESERIALIZER;
 import static io.trino.hive.thrift.metastore.hive_metastoreConstants.FILE_INPUT_FORMAT;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
+import static io.trino.plugin.hive.HivePageSourceProvider.maskedReaderColumns;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
 import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
@@ -109,12 +111,20 @@ public abstract class LinePageSourceFactory
 
         // setup projected columns
         List<HiveColumnHandle> projectedReaderColumns = columns;
-        Optional<ReaderColumns> readerProjections = projectBaseColumns(columns);
+        System.err.println("Input Columns:");
+        columns.forEach(c -> {
+            System.err.println(c);
+            // System.err.println(c.getHiveColumnProjectionInfo().get().getDereferenceIndices().stream().map(Object::toString).collect(Collectors.joining(",")));
+        });
+        Optional<ReaderColumns> readerProjections = maskedReaderColumns(columns);
         if (readerProjections.isPresent()) {
             projectedReaderColumns = readerProjections.get().get().stream()
                     .map(HiveColumnHandle.class::cast)
                     .collect(toImmutableList());
         }
+        //if (1 == 1) throw new RuntimeException("wtf!?");
+        System.err.println("'Base' Columns:");
+        projectedReaderColumns.forEach(System.err::println);
 
         // create deserializer
         LineDeserializer lineDeserializer = EMPTY_LINE_DESERIALIZER;

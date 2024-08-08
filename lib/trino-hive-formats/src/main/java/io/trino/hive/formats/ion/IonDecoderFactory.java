@@ -3,7 +3,10 @@ package io.trino.hive.formats.ion;
 import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
 import com.amazon.ion.IonType;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
+import io.trino.hive.formats.NoopType;
 import io.trino.hive.formats.line.Column;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.block.ArrayBlockBuilder;
@@ -23,7 +26,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -106,12 +108,20 @@ public class IonDecoderFactory
 
         private RowDecoder(List<RowType.Field> fields)
         {
-            this.fieldPositions = IntStream.range(0, fields.size())
-                    .boxed()
-                    .collect(Collectors.toMap(i -> fields.get(i).getName().get(), i -> i));
-            this.fieldDecoders = fields.stream()
-                    .map(f -> decoderForType(f.getType()))
-                    .toList();
+            int fieldPosition = 0;
+            ImmutableList.Builder<BlockDecoder> decoderBuilder = ImmutableList.builder();
+            ImmutableMap.Builder<String, Integer> fieldPositionBuilder = ImmutableMap.builder();
+            for (RowType.Field field : fields) {
+                if (field.getType() == NoopType.NOOP) {
+                    continue;
+                }
+                decoderBuilder.add(decoderForType(field.getType()));
+                fieldPositionBuilder.put(field.getName().get(), fieldPosition);
+                fieldPosition++;
+            }
+
+            fieldPositions = fieldPositionBuilder.buildOrThrow();
+            fieldDecoders = decoderBuilder.build();
         }
 
         private void decode(IonReader ionReader, PageBuilder pageBuilder)
@@ -123,6 +133,7 @@ public class IonDecoderFactory
             if (ionReader.isNullValue()) {
                 // todo: is this an error? it is in spark.
                 //       what does ion-java-path-extraction do here?
+                //       OpenXJson returns top-level nulls
                 throw new IonException("Top Level Values must not be null!");
             }
             decode(ionReader, pageBuilder::getBlockBuilder);
@@ -141,8 +152,8 @@ public class IonDecoderFactory
             ionReader.stepIn();
 
             // todo: consider optimization where we step out after encountering all mapped fields.
-            //       for that to work and not be surprising, we'd need to ignore duplicate
-            //       field keys, which is not yet settled.
+            //       but that requires that we only take the first instance of any duplicate field
+            //       and ignore subsequent values. otherwise it would be surprising for users.
             while (ionReader.next() != null) {
                 // todo: case insensitivity
                 final Integer fieldIndex = fieldPositions.get(ionReader.getFieldName());
