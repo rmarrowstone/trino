@@ -41,6 +41,7 @@ import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
+import io.trino.testing.Bytes;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveChar;
@@ -483,6 +484,18 @@ public final class FormatTestUtils
         return page;
     }
 
+    public static Page toPage(List<Column> columns, List<?>... expectedValues)
+    {
+        PageBuilder pageBuilder = new PageBuilder(columns.stream().map(Column::type).collect(toImmutableList()));
+        for (List<?> expectedValue : expectedValues) {
+            pageBuilder.declarePosition();
+            for (int col = 0; col < columns.size(); col++) {
+                writeTrinoValue(columns.get(col).type(), pageBuilder.getBlockBuilder(col), expectedValue.get(col));
+            }
+        }
+        return pageBuilder.build();
+    }
+
     public static void writeTrinoValue(Type type, BlockBuilder blockBuilder, Object value)
     {
         if (value == null) {
@@ -524,7 +537,8 @@ public final class FormatTestUtils
             type.writeSlice(blockBuilder, trimTrailingSpaces(utf8Slice((String) value)));
         }
         else if (VARBINARY.equals(type)) {
-            type.writeSlice(blockBuilder, Slices.wrappedBuffer(((SqlVarbinary) value).getBytes()));
+            //type.writeSlice(blockBuilder, Slices.wrappedBuffer(((SqlVarbinary) value).getBytes()));
+            type.writeSlice(blockBuilder, Slices.wrappedBuffer(((Bytes) value).getBytes()));
         }
         else if (DATE.equals(type)) {
             long days = ((SqlDate) value).getDays();

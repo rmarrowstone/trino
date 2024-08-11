@@ -95,6 +95,12 @@
         </dependency>
 
         <dependency>
+            <groupId>com.amazon.ion</groupId>
+            <artifactId>ion-java</artifactId>
+            <version>1.11.9</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.gaul</groupId>
             <artifactId>modernizer-maven-annotations</artifactId>
         </dependency>
@@ -141,6 +147,13 @@
             <groupId>io.starburst.openjson</groupId>
             <artifactId>openjson</artifactId>
             <version>1.8-e.12</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.amazon.ion</groupId>
+            <artifactId>ion-hive3-serde</artifactId>
+            <version>1.2.0</version>
             <scope>test</scope>
         </dependency>
 
