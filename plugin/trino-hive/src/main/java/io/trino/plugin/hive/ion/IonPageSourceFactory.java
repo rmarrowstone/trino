@@ -1,12 +1,28 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.trino.plugin.hive.ion;
 
 import com.amazon.ion.IonReader;
 import com.amazon.ion.system.IonReaderBuilder;
+import com.google.common.io.CountingInputStream;
 import com.google.inject.Inject;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoInputFile;
+import io.trino.hive.formats.compression.Codec;
+import io.trino.hive.formats.compression.CompressionKind;
 import io.trino.hive.formats.ion.IonDecoder;
 import io.trino.hive.formats.ion.IonDecoderFactory;
 import io.trino.hive.formats.line.Column;
@@ -14,7 +30,6 @@ import io.trino.plugin.hive.AcidInfo;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
-import io.trino.plugin.hive.HivePageSourceProvider;
 import io.trino.plugin.hive.ReaderColumns;
 import io.trino.plugin.hive.ReaderPageSource;
 import io.trino.plugin.hive.acid.AcidTransaction;
@@ -25,6 +40,7 @@ import io.trino.spi.connector.EmptyPageSource;
 import io.trino.spi.predicate.TupleDomain;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -88,22 +104,33 @@ public class IonPageSourceFactory
                     .collect(toImmutableList());
         }
 
-        final TrinoFileSystem trinoFileSystem = trinoFileSystemFactory.create(session);
-        final TrinoInputFile inputFile = trinoFileSystem.newInputFile(path, estimatedFileSize);
+        TrinoFileSystem trinoFileSystem = trinoFileSystemFactory.create(session);
+        TrinoInputFile inputFile = trinoFileSystem.newInputFile(path, estimatedFileSize);
 
         // todo: optimization for small files that should just be read into memory
         try {
-            final IonReader ionReader = IonReaderBuilder
+            Optional<Codec> codec = CompressionKind.forFile(inputFile.location().fileName())
+                    .map(CompressionKind::createCodec);
+            CountingInputStream countingInputStream = new CountingInputStream(inputFile.newStream());
+            InputStream inputStream;
+            if (codec.isPresent()) {
+                inputStream = codec.get().createStreamDecompressor(countingInputStream);
+            }
+            else {
+                inputStream = countingInputStream;
+            }
+
+            IonReader ionReader = IonReaderBuilder
                     .standard()
-                    .build(inputFile.newStream());
-            final PageBuilder pageBuilder = new PageBuilder(projectedReaderColumns.stream()
+                    .build(inputStream);
+            PageBuilder pageBuilder = new PageBuilder(projectedReaderColumns.stream()
                     .map(HiveColumnHandle::getType)
                     .toList());
-            final List<Column> decoderColumns = projectedReaderColumns.stream()
+            List<Column> decoderColumns = projectedReaderColumns.stream()
                     .map(hc -> new Column(hc.getName(), hc.getType(), hc.getBaseHiveColumnIndex()))
                     .toList();
-            final IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
-            final IonPageSource pageSource = new IonPageSource(ionReader, decoder, pageBuilder);
+            IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
+            IonPageSource pageSource = new IonPageSource(ionReader, countingInputStream::getCount, decoder, pageBuilder);
 
             return Optional.of(new ReaderPageSource(pageSource, readerProjections));
         }

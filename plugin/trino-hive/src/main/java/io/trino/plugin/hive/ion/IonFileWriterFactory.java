@@ -1,3 +1,16 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.trino.plugin.hive.ion;
 
 import com.google.inject.Inject;
@@ -7,12 +20,10 @@ import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.hive.formats.line.Column;
 import io.trino.memory.context.AggregatedMemoryContext;
-import io.trino.metastore.HiveType;
 import io.trino.metastore.StorageFormat;
 import io.trino.plugin.hive.FileWriter;
 import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.HiveFileWriterFactory;
-import io.trino.plugin.hive.HiveTimestampPrecision;
 import io.trino.plugin.hive.WriterKind;
 import io.trino.plugin.hive.acid.AcidTransaction;
 import io.trino.spi.TrinoException;
@@ -36,7 +47,7 @@ import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
 
 public class IonFileWriterFactory
-    implements HiveFileWriterFactory
+        implements HiveFileWriterFactory
 {
     private final TrinoFileSystemFactory fileSystemFactory;
     private final TypeManager typeManager;
@@ -89,8 +100,10 @@ public class IonFileWriterFactory
                     outputStreamMemoryContext,
                     rollbackAction,
                     typeManager,
+                    compressionCodec.getHiveCompressionKind(),
                     columns));
-        } catch (Exception e) {
+        }
+        catch (Exception e) {
             throw new TrinoException(HIVE_WRITER_OPEN_ERROR, "Error creating Ion Output", e);
         }
     }

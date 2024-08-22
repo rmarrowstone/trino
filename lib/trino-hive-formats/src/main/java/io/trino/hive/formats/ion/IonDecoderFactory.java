@@ -1,3 +1,16 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.trino.hive.formats.ion;
 
 import com.amazon.ion.IonException;
@@ -12,7 +25,9 @@ import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RowBlockBuilder;
 import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
+import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.IntegerType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
@@ -34,6 +49,8 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 
 public class IonDecoderFactory
 {
+    private IonDecoderFactory() {}
+
     /**
      * Builds a decoder for the given columns.
      * <p>
@@ -58,6 +75,8 @@ public class IonDecoderFactory
     {
         return switch (type) {
             case IntegerType _ -> wrapDecoder(intDecoder, IonType.INT);
+            case BigintType _ -> wrapDecoder(longDecoder, IonType.INT);
+            case DoubleType _ -> wrapDecoder(floatDecoder, IonType.FLOAT);
             case BooleanType _ -> wrapDecoder(boolDecoder, IonType.BOOL);
             case VarcharType _ -> wrapDecoder(stringDecoder, IonType.STRING, IonType.SYMBOL);
             case VarbinaryType _ -> wrapDecoder(binaryDecoder, IonType.BLOB, IonType.CLOB);
@@ -101,14 +120,14 @@ public class IonDecoderFactory
      * structs.
      */
     private record RowDecoder(Map<String, Integer> fieldPositions, List<BlockDecoder> fieldDecoders)
-        implements IonDecoder, BlockDecoder
+            implements IonDecoder, BlockDecoder
     {
         private static RowDecoder forFields(List<RowType.Field> fields)
         {
             ImmutableList.Builder<BlockDecoder> decoderBuilder = ImmutableList.builder();
             ImmutableMap.Builder<String, Integer> fieldPositionBuilder = ImmutableMap.builder();
             IntStream.range(0, fields.size())
-                    .forEach( position -> {
+                    .forEach(position -> {
                         RowType.Field field = fields.get(position);
                         decoderBuilder.add(decoderForType(field.getType()));
                         fieldPositionBuilder.put(field.getName().get(), position);
@@ -122,14 +141,13 @@ public class IonDecoderFactory
         {
             // todo: also map lists?
             if (ionReader.getType() != IonType.STRUCT) {
-                throw new IonException("Top Level Values must be Structs!");
+                throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
             }
             if (ionReader.isNullValue()) {
                 // todo: is this an error?
                 throw new IonException("Top Level Values must not be null!");
             }
             decode(ionReader, pageBuilder::getBlockBuilder);
-            System.err.println("read row as Ion");
         }
 
         @Override
@@ -174,28 +192,33 @@ public class IonDecoderFactory
     }
 
     private record ArrayDecoder(BlockDecoder elementDecoder)
-                implements BlockDecoder
+            implements BlockDecoder
+    {
+        @Override
+        public void decode(IonReader ionReader, BlockBuilder blockBuilder)
         {
-
-            @Override
-            public void decode(IonReader ionReader, BlockBuilder blockBuilder)
-            {
-                ((ArrayBlockBuilder) blockBuilder)
-                        .buildEntry(elementBuilder -> {
-                            ionReader.stepIn();
-                            while (ionReader.next() != null) {
-                                elementDecoder.decode(ionReader, elementBuilder);
-                            }
-                            ionReader.stepOut();
-                        });
-            }
+            ((ArrayBlockBuilder) blockBuilder)
+                    .buildEntry(elementBuilder -> {
+                        ionReader.stepIn();
+                        while (ionReader.next() != null) {
+                            elementDecoder.decode(ionReader, elementBuilder);
+                        }
+                        ionReader.stepOut();
+                    });
         }
+    }
 
     private static final BlockDecoder intDecoder = (ionReader, blockBuilder) ->
             INTEGER.writeLong(blockBuilder, ionReader.longValue());
 
+    private static final BlockDecoder longDecoder = (ionReader, blockBuilder) ->
+            BigintType.BIGINT.writeLong(blockBuilder, ionReader.longValue());
+
+    private static final BlockDecoder floatDecoder = (ionReader, blockBuilder) ->
+            DoubleType.DOUBLE.writeDouble(blockBuilder, ionReader.doubleValue());
+
     private static final BlockDecoder stringDecoder = (ionReader, blockBuilder) ->
-        VARCHAR.writeSlice(blockBuilder, Slices.utf8Slice(ionReader.stringValue()));
+            VARCHAR.writeSlice(blockBuilder, Slices.utf8Slice(ionReader.stringValue()));
 
     private static final BlockDecoder boolDecoder = (ionReader, blockBuilder) ->
             BooleanType.BOOLEAN.writeBoolean(blockBuilder, ionReader.booleanValue());

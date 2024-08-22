@@ -31,11 +31,12 @@ import io.trino.hdfs.gcs.GoogleGcsConfigurationInitializer;
 import io.trino.hdfs.gcs.HiveGcsConfig;
 import io.trino.hdfs.s3.HiveS3Config;
 import io.trino.hdfs.s3.TrinoS3ConfigurationInitializer;
-import io.trino.hive.formats.line.Column;
 import io.trino.operator.PagesIndex;
 import io.trino.operator.PagesIndexPageSorter;
 import io.trino.plugin.hive.avro.AvroFileWriterFactory;
 import io.trino.plugin.hive.avro.AvroPageSourceFactory;
+import io.trino.plugin.hive.ion.IonFileWriterFactory;
+import io.trino.plugin.hive.ion.IonPageSourceFactory;
 import io.trino.plugin.hive.line.CsvFileWriterFactory;
 import io.trino.plugin.hive.line.CsvPageSourceFactory;
 import io.trino.plugin.hive.line.JsonFileWriterFactory;
@@ -190,6 +191,7 @@ public final class HiveTestUtils
                 .add(new RcFilePageSourceFactory(fileSystemFactory, hiveConfig))
                 .add(new OrcPageSourceFactory(new OrcReaderConfig(), fileSystemFactory, stats, hiveConfig))
                 .add(new ParquetPageSourceFactory(fileSystemFactory, stats, new ParquetReaderConfig(), hiveConfig))
+                .add(new IonPageSourceFactory(fileSystemFactory, hiveConfig))
                 .build();
     }
 
@@ -212,6 +214,7 @@ public final class HiveTestUtils
                 .add(new RcFileFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER, nodeVersion, hiveConfig))
                 .add(new OrcFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER, nodeVersion, new FileFormatDataSourceStats(), new OrcWriterConfig()))
                 .add(new ParquetFileWriterFactory(fileSystemFactory, nodeVersion, TESTING_TYPE_MANAGER, hiveConfig, new FileFormatDataSourceStats()))
+                .add(new IonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
                 .build();
     }
 
@@ -331,15 +334,15 @@ public final class HiveTestUtils
                 Optional.empty());
     }
 
-    public static HiveColumnHandle projectedColumn(Column baseColumn, String... path)
+    public static HiveColumnHandle projectedColumn(HiveColumnHandle baseColumn, String... path)
     {
         if (path.length == 0) {
             throw new IllegalArgumentException("path must have at least one element");
         }
 
-        final Type baseType = baseColumn.type();
+        final Type baseType = baseColumn.getBaseType();
         Type type = baseType;
-        ImmutableList.Builder<Integer> derefBuilder = new ImmutableList.Builder<>();
+        ImmutableList.Builder<Integer> derefBuilder = ImmutableList.builder();
 
         for (String fieldName : path) {
             if (type instanceof RowType rowType) {
@@ -362,8 +365,8 @@ public final class HiveTestUtils
         }
 
         return new HiveColumnHandle(
-                baseColumn.name(),
-                baseColumn.ordinal(),
+                baseColumn.getBaseColumnName(),
+                baseColumn.getBaseHiveColumnIndex(),
                 HiveTypeTranslator.toHiveType(baseType),
                 baseType,
                 Optional.of(new HiveColumnProjectionInfo(
@@ -371,8 +374,8 @@ public final class HiveTestUtils
                         ImmutableList.copyOf(path),
                         HiveTypeTranslator.toHiveType(type),
                         type)),
-                HiveColumnHandle.ColumnType.REGULAR,
-                Optional.empty());
+                baseColumn.getColumnType(),
+                baseColumn.getComment());
     }
 
     private static UUID uuidFromBytes(byte[] bytes)

@@ -1,3 +1,16 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.trino.plugin.hive.ion;
 
 import com.google.common.collect.ImmutableList;
@@ -8,7 +21,6 @@ import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.filesystem.memory.MemoryFileSystemFactory;
-import io.trino.hive.formats.line.Column;
 import io.trino.metastore.HiveType;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveConfig;
@@ -53,15 +65,13 @@ import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
  */
 public class IonPageSourceSmokeTest
 {
-
     @Test
     public void testReadTwoValues()
             throws IOException
     {
         List<HiveColumnHandle> tableColumns = List.of(
                 toHiveBaseColumnHandle("foo", INTEGER, 0),
-                toHiveBaseColumnHandle("bar", VARCHAR, 1)
-        );
+                toHiveBaseColumnHandle("bar", VARCHAR, 1));
 
         assertRowCount(
                 tableColumns,
@@ -72,11 +82,10 @@ public class IonPageSourceSmokeTest
 
     @Test
     public void testReadArray()
-        throws IOException
+            throws IOException
     {
         List<HiveColumnHandle> tablesColumns = List.of(
-                toHiveBaseColumnHandle("my_seq", new ArrayType(BOOLEAN), 0)
-        );
+                toHiveBaseColumnHandle("my_seq", new ArrayType(BOOLEAN), 0));
 
         assertRowCount(
                 tablesColumns,
@@ -87,21 +96,21 @@ public class IonPageSourceSmokeTest
 
     @Test
     public void testProjectedColumn()
-        throws IOException
+            throws IOException
     {
         final RowType spamType = RowType.rowType(field("not_projected", INTEGER), field("eggs", INTEGER));
         List<HiveColumnHandle> tableColumns = List.of(
                 toHiveBaseColumnHandle("spam", spamType, 0),
                 toHiveBaseColumnHandle("ham", BOOLEAN, 1));
         List<HiveColumnHandle> projectedColumns = List.of(
-                projectedColumn(new Column("spam", spamType, 0), "eggs"));
+                projectedColumn(tableColumns.get(0), "eggs"));
 
         assertRowCount(
                 tableColumns,
                 projectedColumns,
                 // the data below reflects that "ham" is not decoded, that column is pruned
                 // "not_projected" is decoded, however, because nested fields are not pruned
-                "{ spam: { not_projected: 17, eggs: 12 }, ham: exploding }",
+                "{ spam: { not_projected: 'explodes?', eggs: 12 }, ham: exploding }",
                 1);
     }
 
@@ -116,8 +125,7 @@ public class IonPageSourceSmokeTest
         int written = writeIonTextFile(ionText, location, fileSystemFactory.create(session));
         System.err.println("Wrote " + written + " bytes");
 
-        try (ConnectorPageSource pageSource = createPageSource(fileSystemFactory, location, tableColumns, projectedColumns, session))
-        {
+        try (ConnectorPageSource pageSource = createPageSource(fileSystemFactory, location, tableColumns, projectedColumns, session)) {
             final MaterializedResult result = MaterializedResult.materializeSourceDataStream(session, pageSource, projectedColumns.stream().map(HiveColumnHandle::getType).toList());
             Assertions.assertEquals(rowCount, result.getRowCount());
         }
@@ -128,7 +136,7 @@ public class IonPageSourceSmokeTest
     {
         final TrinoOutputFile outputFile = fileSystem.newOutputFile(location);
         int written = 0;
-        try (final OutputStream outputStream = outputFile.create()) {
+        try (OutputStream outputStream = outputFile.create()) {
             byte[] bytes = ionText.getBytes(StandardCharsets.UTF_8);
             outputStream.write(bytes);
             outputStream.flush();
