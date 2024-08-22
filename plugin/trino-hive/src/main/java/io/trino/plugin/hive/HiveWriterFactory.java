@@ -735,12 +735,12 @@ public class HiveWriterFactory
     public static String getFileExtension(HiveCompressionCodec compression, StorageFormat format)
     {
         // text format files and ion format files must have the correct extension when compressed
-        if (!(format.getOutputFormat().equals(HIVE_IGNORE_KEY_OUTPUT_FORMAT_CLASS)  || format.getOutputFormat().equals(ION_OUTPUT_FORMAT))) {
-            return "";
-        }
-        return compression.getHiveCompressionKind()
-                .map(CompressionKind::getFileExtension)
-                .orElse("");
+        return switch (format.getOutputFormat()) {
+            case ION_OUTPUT_FORMAT, HIVE_IGNORE_KEY_OUTPUT_FORMAT_CLASS -> compression.getHiveCompressionKind()
+                    .map(CompressionKind::getFileExtension)
+                    .orElse("");
+            default -> "";
+        };
     }
 
     @VisibleForTesting
