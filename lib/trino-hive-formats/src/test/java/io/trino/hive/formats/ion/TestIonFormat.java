@@ -23,6 +23,8 @@ import io.trino.spi.PageBuilder;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.RowType;
+import io.trino.spi.type.SqlVarbinary;
+import io.trino.spi.type.VarbinaryType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -79,7 +81,7 @@ public class TestIonFormat
                 RowType.rowType(
                         field("primes", new ArrayType(INTEGER))),
                 "{ primes: [ 17, 31, 51 ] }",
-                List.of(List.of(17, 31, 51))); // todo: wrap in struct
+                List.of(List.of(17, 31, 51)));
     }
 
     @Test
@@ -92,7 +94,7 @@ public class TestIonFormat
                                 field("first", VARCHAR),
                                 field("last", VARCHAR)))),
                 "{ name: { first: Woody, last: Guthrie } }",
-                List.of(List.of("Woody", "Guthrie"))); // todo: wrap in struct
+                List.of(List.of("Woody", "Guthrie")));
     }
 
     @Test
@@ -108,7 +110,7 @@ public class TestIonFormat
                 // yes, there are three layers of list here:
                 // top-level struct (row), list of elements (array), then inner struct (row)
                 List.of(
-                        List.of(List.of(13), List.of(17)))); // todo: expected data
+                        List.of(List.of(13), List.of(17))));
     }
 
     @Test
@@ -119,15 +121,14 @@ public class TestIonFormat
                 new Column("magic_num", INTEGER, 0),
                 new Column("some_text", VARCHAR, 1),
                 new Column("is_summer", BooleanType.BOOLEAN, 2),
-                // todo: not working due to test util weirdness, not Ion impl
-                // new Column("byte_clob", VarbinaryType.VARBINARY, 3),
+                new Column("byte_clob", VarbinaryType.VARBINARY, 3),
                 new Column("sequencer", new ArrayType(INTEGER), 4),
                 new Column("struction", RowType.rowType(
                         field("foo", INTEGER),
                         field("bar", VARCHAR)), 5));
 
-        List<?> row1 = List.of(17, "hello", true, List.of(1, 2, 3), List.of(51, "baz"));
-        List<?> row2 = List.of(31, "goodbye", false, List.of(7, 8, 9), List.of(67, "qux"));
+        List<?> row1 = List.of(17, "hello", true, new SqlVarbinary(new byte[] {(byte) 0xff }), List.of(1, 2, 3), List.of(51, "baz"));
+        List<?> row2 = List.of(31, "goodbye", false, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa }), List.of(7, 8, 9), List.of(67, "qux"));
 
         Page page = toPage(columns, row1, row2);
 
@@ -159,6 +160,7 @@ public class TestIonFormat
         assertColumnValuesEquals(columns, actual, expected);
     }
 
+    // todo: this needs to assert, not print to stderr!
     private void writeAndPrint(List<Column> columns, Page page)
             throws IOException
     {

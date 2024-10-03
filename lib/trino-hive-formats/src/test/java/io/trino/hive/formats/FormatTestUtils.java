@@ -41,7 +41,6 @@ import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
-import io.trino.testing.Bytes;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveChar;
@@ -537,8 +536,7 @@ public final class FormatTestUtils
             type.writeSlice(blockBuilder, trimTrailingSpaces(utf8Slice((String) value)));
         }
         else if (VARBINARY.equals(type)) {
-            //type.writeSlice(blockBuilder, Slices.wrappedBuffer(((SqlVarbinary) value).getBytes()));
-            type.writeSlice(blockBuilder, Slices.wrappedBuffer(((Bytes) value).getBytes()));
+            type.writeSlice(blockBuilder, Slices.wrappedBuffer(((SqlVarbinary) value).getBytes()));
         }
         else if (DATE.equals(type)) {
             long days = ((SqlDate) value).getDays();

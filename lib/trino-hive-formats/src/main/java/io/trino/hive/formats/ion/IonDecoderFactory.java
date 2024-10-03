@@ -163,18 +163,11 @@ public class IonDecoderFactory
             boolean[] encountered = new boolean[fieldDecoders.size()];
             ionReader.stepIn();
 
-            // todo: consider optimization where we step out after encountering all mapped fields.
-            //       but that requires that we only take the first instance of any duplicate field
-            //       and ignore subsequent values. otherwise it would be surprising for users.
             while (ionReader.next() != null) {
                 // todo: case insensitivity
                 final Integer fieldIndex = fieldPositions.get(ionReader.getFieldName());
                 if (fieldIndex == null) {
                     continue;
-                }
-                if (encountered[fieldIndex]) {
-                    // todo: ignore, throw, or overwrite?
-                    System.out.println("Duplicate field encountered. Is this an error?");
                 }
                 encountered[fieldIndex] = true;
                 final BlockBuilder blockBuilder = blockSelector.apply(fieldIndex);
