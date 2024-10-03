@@ -25,6 +25,7 @@ import io.trino.metastore.HiveType;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceProvider;
+import io.trino.plugin.hive.Schema;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.predicate.TupleDomain;
@@ -44,7 +45,6 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.stream.Collectors;
 
-import static io.trino.hive.thrift.metastore.hive_metastoreConstants.FILE_INPUT_FORMAT;
 import static io.trino.plugin.hive.HivePageSourceProvider.ColumnMapping.buildColumnMappings;
 import static io.trino.plugin.hive.HiveStorageFormat.ION;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
@@ -53,7 +53,6 @@ import static io.trino.plugin.hive.HiveTestUtils.toHiveBaseColumnHandle;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
-import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
@@ -98,7 +97,7 @@ public class IonPageSourceSmokeTest
     public void testProjectedColumn()
             throws IOException
     {
-        final RowType spamType = RowType.rowType(field("not_projected", INTEGER), field("eggs", INTEGER));
+        final RowType spamType = RowType.rowType(field("nested_to_prune", INTEGER), field("eggs", INTEGER));
         List<HiveColumnHandle> tableColumns = List.of(
                 toHiveBaseColumnHandle("spam", spamType, 0),
                 toHiveBaseColumnHandle("ham", BOOLEAN, 1));
@@ -109,8 +108,9 @@ public class IonPageSourceSmokeTest
                 tableColumns,
                 projectedColumns,
                 // the data below reflects that "ham" is not decoded, that column is pruned
-                // "not_projected" is decoded, however, because nested fields are not pruned
-                "{ spam: { not_projected: 'explodes?', eggs: 12 }, ham: exploding }",
+                // "nested_to_prune" is decoded, however, because nested fields are not pruned, yet.
+                // so this test will fail if you change that to something other than an int
+                "{ spam: { nested_to_prune: 31, eggs: 12 }, ham: exploding }",
                 1);
     }
 
@@ -161,6 +161,8 @@ public class IonPageSourceSmokeTest
         long length = fileSystemFactory.create(session).newInputFile(location).length();
         System.err.println("Found " + length + " bytes to read");
 
+        long nowMillis = Instant.now().toEpochMilli();
+
         List<HivePageSourceProvider.ColumnMapping> columnMappings = buildColumnMappings(
                 "",
                 ImmutableList.of(),
@@ -170,11 +172,11 @@ public class IonPageSourceSmokeTest
                 location.toString(),
                 OptionalInt.empty(),
                 length,
-                Instant.now().toEpochMilli());
+                nowMillis);
 
         final Map<String, String> tableProperties = ImmutableMap.<String, String>builder()
-                .put(FILE_INPUT_FORMAT, ION.getInputFormat())
-                .put(SERIALIZATION_LIB, ION.getSerde())
+                //.put(FILE_INPUT_FORMAT, ION.getInputFormat())
+                //.put(SERIALIZATION_LIB, ION.getSerde())
                 .put(LIST_COLUMNS, tableColumns.stream().map(HiveColumnHandle::getName).collect(Collectors.joining(",")))
                 .put(LIST_COLUMN_TYPES, tableColumns.stream().map(HiveColumnHandle::getHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
                 .buildOrThrow();
@@ -187,7 +189,8 @@ public class IonPageSourceSmokeTest
                         0,
                         length,
                         length,
-                        tableProperties,
+                        nowMillis,
+                        new Schema(ION.getSerde(), false, tableProperties),
                         TupleDomain.all(),
                         TESTING_TYPE_MANAGER,
                         Optional.empty(),

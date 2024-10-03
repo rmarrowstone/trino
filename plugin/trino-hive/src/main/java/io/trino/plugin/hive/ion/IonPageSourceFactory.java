@@ -32,6 +32,7 @@ import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
 import io.trino.plugin.hive.ReaderColumns;
 import io.trino.plugin.hive.ReaderPageSource;
+import io.trino.plugin.hive.Schema;
 import io.trino.plugin.hive.acid.AcidTransaction;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
@@ -42,7 +43,6 @@ import io.trino.spi.predicate.TupleDomain;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 
@@ -52,7 +52,6 @@ import static io.trino.hive.formats.HiveClassNames.ION_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
-import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
 
 public class IonPageSourceFactory
@@ -73,7 +72,8 @@ public class IonPageSourceFactory
             long start,
             long length,
             long estimatedFileSize,
-            Map<String, String> schema,
+            long lastModifiedTime,
+            Schema schema,
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             Optional<AcidInfo> acidInfo,
@@ -81,7 +81,7 @@ public class IonPageSourceFactory
             boolean originalFile,
             AcidTransaction transaction)
     {
-        if (!ION_SERDE_CLASS.equals(getDeserializerClassName(schema))) {
+        if (!ION_SERDE_CLASS.equals(schema.serializationLibraryName())) {
             return Optional.empty();
         }
         checkArgument(acidInfo.isEmpty(), "Acid is not supported for Ion files");
