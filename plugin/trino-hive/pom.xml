@@ -394,6 +394,13 @@
         </dependency>
 
         <dependency>
+            <groupId>com.amazon.ion</groupId>
+            <artifactId>ion-hive3-serde</artifactId>
+            <version>1.2.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>http-server</artifactId>
             <scope>test</scope>

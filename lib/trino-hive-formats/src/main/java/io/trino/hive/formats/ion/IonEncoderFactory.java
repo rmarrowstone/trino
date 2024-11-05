@@ -26,6 +26,7 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.CharType;
+import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.Int128;
@@ -44,6 +45,9 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.IntFunction;
@@ -78,9 +82,10 @@ public class IonEncoderFactory
             case DoubleType _ -> doubleEncoder;
             case VarcharType _, CharType _ -> stringEncoder;
             case DecimalType t -> decimalEncoder(t);
+            case DateType _ -> dateEncoder;
             case TimestampType t -> timestampEncoder(t);
-            case RowType t -> RowEncoder.forFields(t.getFields()); // remember to wrap element encoder here
-            case ArrayType t -> new ArrayEncoder(wrapEncoder(encoderForType(t.getElementType()))); // remember to wrap element encoder here
+            case RowType t -> RowEncoder.forFields(t.getFields());
+            case ArrayType t -> new ArrayEncoder(wrapEncoder(encoderForType(t.getElementType())));
             default -> throw new IllegalArgumentException(String.format("Unsupported type: %s", type));
         };
     }
@@ -138,9 +143,7 @@ public class IonEncoderFactory
         {
             writer.stepIn(IonType.STRUCT);
             for (int i = 0; i < fieldEncoders.size(); i++) {
-                // todo: it may be preferable to elide struct fields when null
-                //       consider what the Ion Hive Serde does
-
+                // todo: the Hive SerDe omits fields when null by default
                 writer.setFieldName(fieldNames.get(i));
                 fieldEncoders.get(i)
                         .encode(writer, blockSelector.apply(i), position);
@@ -232,4 +235,12 @@ public class IonEncoderFactory
 
     private static final BlockEncoder doubleEncoder = (writer, block, position) ->
             writer.writeFloat(DoubleType.DOUBLE.getDouble(block, position));
+
+    private static final BlockEncoder dateEncoder = (writer, block, position) ->
+            writer.writeTimestamp(
+                    Timestamp.forDateZ(
+                            Date.from(
+                                    LocalDate.ofEpochDay(DateType.DATE.getLong(block, position))
+                                            .atStartOfDay(ZoneId.of("UTC"))
+                                            .toInstant())));
 }

@@ -28,6 +28,7 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.CharType;
+import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.Int128;
@@ -44,6 +45,7 @@ import io.trino.spi.type.VarcharType;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -88,6 +90,7 @@ public class IonDecoderFactory
             case RealType _ -> wrapDecoder(realDecoder, IonType.FLOAT);
             case DoubleType _ -> wrapDecoder(floatDecoder, IonType.FLOAT);
             case BooleanType _ -> wrapDecoder(boolDecoder, IonType.BOOL);
+            case DateType _ -> wrapDecoder(dateDecoder, IonType.TIMESTAMP);
             case TimestampType t -> wrapDecoder(timestampDecoder(t), IonType.TIMESTAMP);
             case DecimalType t -> wrapDecoder(decimalDecoder(t), IonType.DECIMAL);
             case VarcharType _, CharType _ -> wrapDecoder(stringDecoder, IonType.STRING, IonType.SYMBOL);
@@ -151,12 +154,13 @@ public class IonDecoderFactory
         @Override
         public void decode(IonReader ionReader, PageBuilder pageBuilder)
         {
-            // todo: also map lists?
+            // todo: we could also map an Ion List to a Struct
             if (ionReader.getType() != IonType.STRUCT) {
                 throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
             }
             if (ionReader.isNullValue()) {
-                // todo: is this an error?
+                // todo: is this an error or just a null value?
+                //       i think in the hive serde it's a null record.
                 throw new IonException("Top Level Values must not be null!");
             }
             decode(ionReader, pageBuilder::getBlockBuilder);
@@ -176,7 +180,7 @@ public class IonDecoderFactory
             ionReader.stepIn();
 
             while (ionReader.next() != null) {
-                // todo: case insensitivity?
+                // todo: case insensitivity
                 final Integer fieldIndex = fieldPositions.get(ionReader.getFieldName());
                 if (fieldIndex == null) {
                     continue;
@@ -293,6 +297,9 @@ public class IonDecoderFactory
 
     private static final BlockDecoder boolDecoder = (ionReader, blockBuilder) ->
             BooleanType.BOOLEAN.writeBoolean(blockBuilder, ionReader.booleanValue());
+
+    private static final BlockDecoder dateDecoder = (ionReader, blockBuilder) ->
+            DateType.DATE.writeLong(blockBuilder, ionReader.timestampValue().dateValue().toInstant().atZone(ZoneId.of("UTC")).toLocalDate().toEpochDay());
 
     private static final BlockDecoder binaryDecoder = (ionReader, blockBuilder) ->
             VarbinaryType.VARBINARY.writeSlice(blockBuilder, Slices.wrappedBuffer(ionReader.newBytes()));
