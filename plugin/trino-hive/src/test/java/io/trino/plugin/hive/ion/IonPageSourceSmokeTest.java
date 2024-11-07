@@ -122,8 +122,7 @@ public class IonPageSourceSmokeTest
 
         final ConnectorSession session = getHiveSession(new HiveConfig());
 
-        int written = writeIonTextFile(ionText, location, fileSystemFactory.create(session));
-        System.err.println("Wrote " + written + " bytes");
+        writeIonTextFile(ionText, location, fileSystemFactory.create(session));
 
         try (ConnectorPageSource pageSource = createPageSource(fileSystemFactory, location, tableColumns, projectedColumns, session)) {
             final MaterializedResult result = MaterializedResult.materializeSourceDataStream(session, pageSource, projectedColumns.stream().map(HiveColumnHandle::getType).toList());
@@ -159,8 +158,6 @@ public class IonPageSourceSmokeTest
         IonPageSourceFactory factory = new IonPageSourceFactory(fileSystemFactory);
 
         long length = fileSystemFactory.create(session).newInputFile(location).length();
-        System.err.println("Found " + length + " bytes to read");
-
         long nowMillis = Instant.now().toEpochMilli();
 
         List<HivePageSourceProvider.ColumnMapping> columnMappings = buildColumnMappings(
