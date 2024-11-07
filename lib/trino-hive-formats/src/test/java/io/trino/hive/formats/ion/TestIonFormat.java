@@ -13,12 +13,14 @@
  */
 package io.trino.hive.formats.ion;
 
+import com.amazon.ion.IonDatagram;
 import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
+import com.amazon.ion.IonSystem;
 import com.amazon.ion.IonWriter;
 import com.amazon.ion.Timestamp;
 import com.amazon.ion.system.IonReaderBuilder;
-import com.amazon.ion.system.IonTextWriterBuilder;
+import com.amazon.ion.system.IonSystemBuilder;
 import io.trino.hive.formats.line.Column;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
@@ -31,10 +33,10 @@ import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.VarbinaryType;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -192,27 +194,30 @@ public class TestIonFormat
                         field("foo", INTEGER),
                         field("bar", VARCHAR)), 5));
 
-        List<?> row1 = List.of(17, "hello", true, new SqlVarbinary(new byte[] {(byte) 0xff}), List.of(1, 2, 3), List.of(51, "baz"));
-        List<?> row2 = List.of(31, "goodbye", false, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa}), List.of(7, 8, 9), List.of(67, "qux"));
+        List<Object> row1 = List.of(17, "something", true, new SqlVarbinary(new byte[] {(byte) 0xff}), List.of(1, 2, 3), List.of(51, "baz"));
+        List<Object> row2 = List.of(31, "somebody", false, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa}), List.of(7, 8, 9), List.of(67, "qux"));
+        String ionText = """
+                { magic_num:17, some_text:"something", is_summer:true, byte_clob:{{/w==}}, sequencer:[1,2,3], struction:{ foo:51, bar:"baz"}}
+                { magic_num:31, some_text:"somebody", is_summer:false, byte_clob:{{Aao=}}, sequencer:[7,8,9], struction:{ foo:67, bar:"qux"}}
+                """;
 
         Page page = toPage(columns, row1, row2);
-
-        writeAndPrint(columns, page);
+        assertIonEquivalence(columns, page, ionText);
     }
 
     private void assertValues(RowType rowType, String ionText, List<Object>... expected)
             throws IOException
     {
-        final List<RowType.Field> fields = rowType.getFields();
-        final List<Column> columns = IntStream.range(0, fields.size())
+        List<RowType.Field> fields = rowType.getFields();
+        List<Column> columns = IntStream.range(0, fields.size())
                 .boxed()
                 .map(i -> {
                     final RowType.Field field = fields.get(i);
                     return new Column(field.getName().get(), field.getType(), i);
                 })
                 .toList();
-        final IonDecoder decoder = IonDecoderFactory.buildDecoder(columns);
-        final PageBuilder pageBuilder = new PageBuilder(expected.length, rowType.getFields().stream().map(RowType.Field::getType).toList());
+        IonDecoder decoder = IonDecoderFactory.buildDecoder(columns);
+        PageBuilder pageBuilder = new PageBuilder(expected.length, rowType.getFields().stream().map(RowType.Field::getType).toList());
 
         try (IonReader ionReader = IonReaderBuilder.standard().build(ionText)) {
             for (int i = 0; i < expected.length; i++) {
@@ -224,19 +229,35 @@ public class TestIonFormat
         }
 
         for (int i = 0; i < expected.length; i++) {
-            final List<Object> actual = readTrinoValues(columns, pageBuilder.build(), i);
+            List<Object> actual = readTrinoValues(columns, pageBuilder.build(), i);
             assertColumnValuesEquals(columns, actual, expected[i]);
         }
     }
 
-    // todo: this needs to assert, not print to stderr!
-    private void writeAndPrint(List<Column> columns, Page page)
+    /**
+     * Encodes the page as Ion and asserts its equivalence to ionText, per the Ion datamodel.
+     * <br>
+     * This allows us to make assertions about how the data is encoded that may be equivalent
+     * in the trino datamodel but distinct per the Ion datamodel. Some examples:
+     * - absent fields vs null field values
+     * - Symbol vs String for text values
+     * - Timestamps with UTC vs unknown offset
+     */
+    private void assertIonEquivalence(List<Column> columns, Page page, String ionText)
             throws IOException
     {
-        final IonEncoder encoder = IonEncoderFactory.buildEncoder(columns);
-        final IonWriter ionWriter = IonTextWriterBuilder.standard()
-                .build((OutputStream) System.err);
+        IonSystem system = IonSystemBuilder.standard().build();
+        IonDatagram datagram = system.newDatagram();
+        IonEncoder encoder = IonEncoderFactory.buildEncoder(columns);
+        IonWriter ionWriter = system.newWriter(datagram);
         encoder.encode(ionWriter, page);
         ionWriter.close();
+
+        IonDatagram expected = system.getLoader().load(ionText);
+        Assertions.assertEquals(datagram.size(), expected.size());
+        for (int i = 0; i < expected.size(); i++) {
+            // IonValue.equals() is Ion model equivalence.
+            Assertions.assertEquals(expected.get(i), datagram.get(i));
+        }
     }
 }

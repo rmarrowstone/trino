@@ -22,7 +22,7 @@ public interface IonDecoder
     /**
      * Reads the _current_ top-level-value from the IonReader.
      * <p>
-     * Expects that the calling code has called IonReader.getNext()
+     * Expects that the calling code has called IonReader.next()
      * to position the reader at the value to be decoded.
      */
     void decode(IonReader reader, PageBuilder builder)
