@@ -72,7 +72,7 @@ public class IonDecoderFactory
     {
         return RowDecoder.forFields(
                 columns.stream()
-                        .map(c -> new RowType.Field(Optional.of(c.name().toLowerCase(Locale.ROOT)), c.type()))
+                        .map(c -> new RowType.Field(Optional.of(c.name()), c.type()))
                         .toList());
     }
 
