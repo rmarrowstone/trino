@@ -180,6 +180,8 @@ public final class HiveTestUtils
     public static Set<HivePageSourceFactory> getDefaultHivePageSourceFactories(TrinoFileSystemFactory fileSystemFactory, HiveConfig hiveConfig)
     {
         FileFormatDataSourceStats stats = new FileFormatDataSourceStats();
+        // set IonNativeTrino as true in hiveConfig for testing
+        hiveConfig.setIonNativeTrinoEnabled(true);
         return ImmutableSet.<HivePageSourceFactory>builder()
                 .add(new CsvPageSourceFactory(fileSystemFactory, hiveConfig))
                 .add(new JsonPageSourceFactory(fileSystemFactory, hiveConfig))
@@ -191,7 +193,7 @@ public final class HiveTestUtils
                 .add(new RcFilePageSourceFactory(fileSystemFactory, hiveConfig))
                 .add(new OrcPageSourceFactory(new OrcReaderConfig(), fileSystemFactory, stats, hiveConfig))
                 .add(new ParquetPageSourceFactory(fileSystemFactory, stats, new ParquetReaderConfig(), hiveConfig))
-                .add(new IonPageSourceFactory(fileSystemFactory))
+                .add(new IonPageSourceFactory(fileSystemFactory, hiveConfig))
                 .build();
     }
 

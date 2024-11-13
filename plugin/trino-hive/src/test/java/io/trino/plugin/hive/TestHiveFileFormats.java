@@ -376,12 +376,16 @@ public final class TestHiveFileFormats
                 .filter(tc -> !(tc.type instanceof MapType))
                 .collect(toList());
 
+        HiveConfig hiveConfig = new HiveConfig();
+        // enable Ion native trino integration for testing while the implementation is in progress
+        hiveConfig.setIonNativeTrinoEnabled(true);
+
         assertThatFileFormat(ION)
                 .withColumns(testColumns)
                 .withRowsCount(rowCount)
                 .withFileSizePadding(fileSizePadding)
                 .withFileWriterFactory(fileSystemFactory -> new IonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
-                .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory));
+                .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory, hiveConfig));
     }
 
     @Test(dataProvider = "validRowAndFileSizePadding")

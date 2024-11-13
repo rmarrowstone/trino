@@ -28,6 +28,7 @@ import io.trino.hive.formats.ion.IonDecoderFactory;
 import io.trino.hive.formats.line.Column;
 import io.trino.plugin.hive.AcidInfo;
 import io.trino.plugin.hive.HiveColumnHandle;
+import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
 import io.trino.plugin.hive.ReaderColumns;
 import io.trino.plugin.hive.ReaderPageSource;
@@ -49,6 +50,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.hive.formats.HiveClassNames.ION_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
+import static io.trino.plugin.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
@@ -57,11 +59,14 @@ public class IonPageSourceFactory
         implements HivePageSourceFactory
 {
     private final TrinoFileSystemFactory trinoFileSystemFactory;
+    // this is used as a feature flag to enable Ion native trino integration
+    private final boolean nativeTrinoEnabled;
 
     @Inject
-    public IonPageSourceFactory(TrinoFileSystemFactory trinoFileSystemFactory)
+    public IonPageSourceFactory(TrinoFileSystemFactory trinoFileSystemFactory, HiveConfig hiveConfig)
     {
         this.trinoFileSystemFactory = trinoFileSystemFactory;
+        this.nativeTrinoEnabled = hiveConfig.getIonNativeTrinoEnabled();
     }
 
     @Override
@@ -80,6 +85,9 @@ public class IonPageSourceFactory
             boolean originalFile,
             AcidTransaction transaction)
     {
+        if (!this.nativeTrinoEnabled) {
+            throw new TrinoException(HIVE_UNSUPPORTED_FORMAT, "Ion native trino integration is not enabled");
+        }
         if (!ION_SERDE_CLASS.equals(schema.serializationLibraryName())) {
             return Optional.empty();
         }

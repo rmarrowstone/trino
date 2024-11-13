@@ -120,11 +120,16 @@ public class IonPageSourceSmokeTest
         TrinoFileSystemFactory fileSystemFactory = new MemoryFileSystemFactory();
         Location location = Location.of("memory:///test.ion");
 
-        final ConnectorSession session = getHiveSession(new HiveConfig());
+        HiveConfig hiveConfig = new HiveConfig();
+        // enable Ion native trino integration for testing while the implementation is in progress
+        hiveConfig.setIonNativeTrinoEnabled(true);
+
+        final ConnectorSession session = getHiveSession(hiveConfig);
 
         writeIonTextFile(ionText, location, fileSystemFactory.create(session));
 
-        try (ConnectorPageSource pageSource = createPageSource(fileSystemFactory, location, tableColumns, projectedColumns, session)) {
+        try (ConnectorPageSource pageSource = createPageSource(fileSystemFactory, hiveConfig, location, tableColumns,
+                projectedColumns, session)) {
             final MaterializedResult result = MaterializedResult.materializeSourceDataStream(session, pageSource, projectedColumns.stream().map(HiveColumnHandle::getType).toList());
             Assertions.assertEquals(rowCount, result.getRowCount());
         }
@@ -149,13 +154,14 @@ public class IonPageSourceSmokeTest
      */
     private static ConnectorPageSource createPageSource(
             TrinoFileSystemFactory fileSystemFactory,
+            HiveConfig hiveConfig,
             Location location,
             List<HiveColumnHandle> tableColumns,
             List<HiveColumnHandle> projectedColumns,
             ConnectorSession session)
             throws IOException
     {
-        IonPageSourceFactory factory = new IonPageSourceFactory(fileSystemFactory);
+        IonPageSourceFactory factory = new IonPageSourceFactory(fileSystemFactory, hiveConfig);
 
         long length = fileSystemFactory.create(session).newInputFile(location).length();
         long nowMillis = Instant.now().toEpochMilli();
