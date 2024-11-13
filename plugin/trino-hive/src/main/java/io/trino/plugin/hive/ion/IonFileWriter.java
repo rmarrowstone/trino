@@ -15,6 +15,7 @@ package io.trino.plugin.hive.ion;
 
 import com.amazon.ion.IonWriter;
 import com.amazon.ion.system.IonTextWriterBuilder;
+import com.amazon.ion.system.IonWriterBuilder;
 import com.google.common.io.CountingOutputStream;
 import io.trino.hive.formats.compression.CompressionKind;
 import io.trino.hive.formats.ion.IonEncoder;
@@ -51,6 +52,7 @@ public class IonFileWriter
             Closeable rollbackAction,
             TypeManager typeManager,
             Optional<CompressionKind> compressionKind,
+            IonWriterBuilder writerBuilder,
             List<Column> columns)
             throws IOException
     {
@@ -66,10 +68,7 @@ public class IonFileWriter
         else {
             this.outputStream = countingOutputStream;
         }
-
-        this.writer = IonTextWriterBuilder
-                .minimal()
-                .build(this.outputStream);
+        this.writer = writerBuilder.build(this.outputStream);
     }
 
     @Override

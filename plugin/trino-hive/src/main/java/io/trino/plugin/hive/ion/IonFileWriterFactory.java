@@ -13,6 +13,9 @@
  */
 package io.trino.plugin.hive.ion;
 
+import com.amazon.ion.system.IonBinaryWriterBuilder;
+import com.amazon.ion.system.IonTextWriterBuilder;
+import com.amazon.ion.system.IonWriterBuilder;
 import com.google.inject.Inject;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
@@ -45,6 +48,8 @@ import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
 import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
+import static io.trino.plugin.hive.util.HiveUtil.getIonEncoding;
+import static io.trino.plugin.hive.util.SerdeConstants.TEXT_ENCODING;
 
 public class IonFileWriterFactory
         implements HiveFileWriterFactory
@@ -95,12 +100,17 @@ public class IonFileWriterFactory
                     .mapToObj(ordinal -> new Column(fileColumnNames.get(ordinal), fileColumnTypes.get(ordinal), ordinal))
                     .toList();
 
+            IonWriterBuilder writerBuilder = getIonEncoding(schema).equals(TEXT_ENCODING)
+                    ? IonTextWriterBuilder.minimal()
+                    : IonBinaryWriterBuilder.standard();
+
             return Optional.of(new IonFileWriter(
                     outputFile.create(outputStreamMemoryContext),
                     outputStreamMemoryContext,
                     rollbackAction,
                     typeManager,
                     compressionCodec.getHiveCompressionKind(),
+                    writerBuilder,
                     columns));
         }
         catch (Exception e) {
