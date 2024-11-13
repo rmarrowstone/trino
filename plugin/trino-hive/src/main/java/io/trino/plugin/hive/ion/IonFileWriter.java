@@ -14,7 +14,6 @@
 package io.trino.plugin.hive.ion;
 
 import com.amazon.ion.IonWriter;
-import com.amazon.ion.system.IonTextWriterBuilder;
 import com.amazon.ion.system.IonWriterBuilder;
 import com.google.common.io.CountingOutputStream;
 import io.trino.hive.formats.compression.CompressionKind;

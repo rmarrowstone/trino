@@ -207,7 +207,8 @@ public final class HiveUtil
         return HIVE_TIMESTAMP_PARSER.parseMillis(value) * MICROSECONDS_PER_MILLISECOND;
     }
 
-    public static String getIonEncoding(Map<String, String> schema) {
+    public static String getIonEncoding(Map<String, String> schema)
+    {
         return schema.getOrDefault(ION_ENCODING, BINARY_ENCODING);
     }
 
