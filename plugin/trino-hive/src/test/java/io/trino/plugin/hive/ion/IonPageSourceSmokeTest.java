@@ -25,6 +25,7 @@ import io.trino.metastore.HiveType;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceProvider;
+import io.trino.plugin.hive.ReaderPageSource;
 import io.trino.plugin.hive.Schema;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.ConnectorSession;
@@ -112,6 +113,55 @@ public class IonPageSourceSmokeTest
                 // so this test will fail if you change that to something other than an int
                 "{ spam: { nested_to_prune: 31, eggs: 12 }, ham: exploding }",
                 1);
+    }
+
+    @Test
+    public void testPageSourceWithNativeTrinoDisabled()
+            throws IOException
+    {
+        List<HiveColumnHandle> tableColumns = List.of(
+                toHiveBaseColumnHandle("foo", INTEGER, 0),
+                toHiveBaseColumnHandle("bar", VARCHAR, 1));
+        String ionText = "{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }";
+
+        TrinoFileSystemFactory fileSystemFactory = new MemoryFileSystemFactory();
+        Location location = Location.of("memory:///test.ion");
+
+        // by default Ion native Trino integration is disabled
+        HiveConfig hiveConfig = new HiveConfig();
+
+        final ConnectorSession session = getHiveSession(hiveConfig);
+
+        writeIonTextFile(ionText, location, fileSystemFactory.create(session));
+
+        IonPageSourceFactory factory = new IonPageSourceFactory(fileSystemFactory, hiveConfig);
+
+        long length = fileSystemFactory.create(session).newInputFile(location).length();
+        long nowMillis = Instant.now().toEpochMilli();
+
+        final Map<String, String> tableProperties = ImmutableMap.<String, String>builder()
+                .put(LIST_COLUMNS, tableColumns.stream().map(HiveColumnHandle::getName).collect(Collectors.joining(",")))
+                .put(LIST_COLUMN_TYPES, tableColumns.stream().map(HiveColumnHandle::getHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
+                .buildOrThrow();
+
+        Schema schema = new Schema(ION.getSerde(), false, tableProperties);
+
+        Optional<ReaderPageSource> pageSource = factory.createPageSource(
+                session,
+                location,
+                0,
+                length,
+                length,
+                nowMillis,
+                schema,
+                tableColumns,
+                TupleDomain.all(),
+                Optional.empty(),
+                OptionalInt.empty(),
+                false,
+                NO_ACID_TRANSACTION);
+
+        Assertions.assertTrue(pageSource.isEmpty(), "Expected empty page source when native Trino is disabled");
     }
 
     private void assertRowCount(List<HiveColumnHandle> tableColumns, List<HiveColumnHandle> projectedColumns, String ionText, int rowCount)
