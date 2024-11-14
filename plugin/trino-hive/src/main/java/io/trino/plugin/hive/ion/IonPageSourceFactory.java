@@ -50,7 +50,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.hive.formats.HiveClassNames.ION_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
-import static io.trino.plugin.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
@@ -86,7 +85,9 @@ public class IonPageSourceFactory
             AcidTransaction transaction)
     {
         if (!this.nativeTrinoEnabled) {
-            throw new TrinoException(HIVE_UNSUPPORTED_FORMAT, "Ion native trino integration is not enabled");
+            // this allows user to defer to some default implementation(like ion-hive-serde) or throw an error based
+            // on their use case
+            return Optional.empty();
         }
         if (!ION_SERDE_CLASS.equals(schema.serializationLibraryName())) {
             return Optional.empty();

@@ -115,6 +115,8 @@ public class HiveConfig
 
     // This is a feature flag for Ion native trino integration.
     // Default value is false and requires explicitly setting it to true to enable Ion native trino integration.
+    // TODO: This should change to default as true in future once we have a complete implementation of Ion native
+    //  trino integration supported.
     private boolean ionNativeTrinoEnabled;
 
     private String parquetTimeZone = TimeZone.getDefault().getID();

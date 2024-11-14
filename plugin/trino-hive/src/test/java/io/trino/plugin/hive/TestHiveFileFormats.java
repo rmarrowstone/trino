@@ -378,6 +378,7 @@ public final class TestHiveFileFormats
 
         HiveConfig hiveConfig = new HiveConfig();
         // enable Ion native trino integration for testing while the implementation is in progress
+        // TODO: In future this flag should change to `true` as default and then the following statement can be removed.
         hiveConfig.setIonNativeTrinoEnabled(true);
 
         assertThatFileFormat(ION)

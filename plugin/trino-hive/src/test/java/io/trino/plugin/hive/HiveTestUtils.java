@@ -181,6 +181,7 @@ public final class HiveTestUtils
     {
         FileFormatDataSourceStats stats = new FileFormatDataSourceStats();
         // set IonNativeTrino as true in hiveConfig for testing
+        // TODO: In future this flag should change to `true` as default and then the following statement can be removed.
         hiveConfig.setIonNativeTrinoEnabled(true);
         return ImmutableSet.<HivePageSourceFactory>builder()
                 .add(new CsvPageSourceFactory(fileSystemFactory, hiveConfig))
