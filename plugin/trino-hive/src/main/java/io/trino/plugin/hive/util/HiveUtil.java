@@ -109,8 +109,6 @@ import static io.trino.plugin.hive.util.HiveBucketing.isSupportedBucketing;
 import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
 import static io.trino.plugin.hive.util.HiveTypeUtil.getTypeSignature;
 import static io.trino.plugin.hive.util.HiveTypeUtil.typeSupported;
-import static io.trino.plugin.hive.util.SerdeConstants.BINARY_ENCODING;
-import static io.trino.plugin.hive.util.SerdeConstants.ION_ENCODING;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
 import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
@@ -205,11 +203,6 @@ public final class HiveUtil
     public static long parseHiveTimestamp(String value)
     {
         return HIVE_TIMESTAMP_PARSER.parseMillis(value) * MICROSECONDS_PER_MILLISECOND;
-    }
-
-    public static String getIonEncoding(Map<String, String> schema)
-    {
-        return schema.getOrDefault(ION_ENCODING, BINARY_ENCODING);
     }
 
     public static String getSerializationLibraryName(Map<String, String> schema)

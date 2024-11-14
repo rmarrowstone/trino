@@ -28,9 +28,5 @@ public final class SerdeConstants
     public static final String LIST_COLUMN_TYPES = "columns.types";
     public static final String LIST_COLUMN_COMMENTS = "columns.comments";
 
-    public static final String ION_ENCODING = "ion.encoding";
-    public static final String TEXT_ENCODING = "Text";
-    public static final String BINARY_ENCODING = "Binary";
-
     private SerdeConstants() {}
 }

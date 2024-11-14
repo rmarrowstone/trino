@@ -134,10 +134,14 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.hive.formats.ion.IonConstants.ERROR_ENCODING;
+import static io.trino.hive.formats.ion.IonConstants.ION_ENCODING;
+import static io.trino.hive.formats.ion.IonConstants.TEXT_ENCODING;
 import static io.trino.plugin.base.type.TrinoTimestampEncoderFactory.createTimestampEncoder;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.trino.plugin.hive.HiveColumnHandle.createBaseColumn;
+import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_OPEN_ERROR;
 import static io.trino.plugin.hive.HivePageSourceProvider.ColumnMapping.buildColumnMappings;
 import static io.trino.plugin.hive.HivePartitionKey.HIVE_DEFAULT_DYNAMIC_PARTITION;
 import static io.trino.plugin.hive.HiveStorageFormat.AVRO;
@@ -156,10 +160,8 @@ import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.plugin.hive.HiveTestUtils.mapType;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
 import static io.trino.plugin.hive.util.HiveTypeTranslator.toHiveType;
-import static io.trino.plugin.hive.util.SerdeConstants.ION_ENCODING;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
-import static io.trino.plugin.hive.util.SerdeConstants.TEXT_ENCODING;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.CharType.createCharType;
@@ -407,6 +409,25 @@ public final class TestHiveFileFormats
                 .withTableProperties(ImmutableMap.of(ION_ENCODING, TEXT_ENCODING))
                 .withFileWriterFactory(fileSystemFactory -> new IonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
                 .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory));
+    }
+
+    @Test(dataProvider = "validRowAndFileSizePadding")
+    public void testInvalidIonEncoding(int rowCount, long fileSizePadding)
+            throws Exception
+    {
+        List<TestColumn> testColumns = TEST_COLUMNS.stream()
+                // todo: add support for maps to trino impl
+                .filter(tc -> !(tc.type instanceof MapType))
+                .collect(toList());
+        assertTrinoExceptionThrownBy(() -> assertThatFileFormat(ION)
+                .withColumns(testColumns)
+                .withRowsCount(rowCount)
+                .withFileSizePadding(fileSizePadding)
+                .withTableProperties(ImmutableMap.of(ION_ENCODING, ERROR_ENCODING))
+                .withFileWriterFactory(fileSystemFactory -> new IonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
+                .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory)))
+                .hasErrorCode(HIVE_WRITER_OPEN_ERROR)
+                .hasMessage("Error creating Ion Output");
     }
 
     @Test(dataProvider = "validRowAndFileSizePadding")
