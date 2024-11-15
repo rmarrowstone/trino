@@ -65,6 +65,8 @@ import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
  */
 public class IonPageSourceSmokeTest
 {
+    public static final String TEST_ION_LOCATION = "memory:///test.ion";
+
     @Test
     public void testReadTwoValues()
             throws IOException
@@ -125,7 +127,7 @@ public class IonPageSourceSmokeTest
         String ionText = "{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }";
 
         TrinoFileSystemFactory fileSystemFactory = new MemoryFileSystemFactory();
-        Location location = Location.of("memory:///test.ion");
+        Location location = Location.of(TEST_ION_LOCATION);
 
         // by default Ion native Trino integration is disabled
         HiveConfig hiveConfig = new HiveConfig();
@@ -134,32 +136,8 @@ public class IonPageSourceSmokeTest
 
         writeIonTextFile(ionText, location, fileSystemFactory.create(session));
 
-        IonPageSourceFactory factory = new IonPageSourceFactory(fileSystemFactory, hiveConfig);
-
-        long length = fileSystemFactory.create(session).newInputFile(location).length();
-        long nowMillis = Instant.now().toEpochMilli();
-
-        final Map<String, String> tableProperties = ImmutableMap.<String, String>builder()
-                .put(LIST_COLUMNS, tableColumns.stream().map(HiveColumnHandle::getName).collect(Collectors.joining(",")))
-                .put(LIST_COLUMN_TYPES, tableColumns.stream().map(HiveColumnHandle::getHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
-                .buildOrThrow();
-
-        Schema schema = new Schema(ION.getSerde(), false, tableProperties);
-
-        Optional<ReaderPageSource> pageSource = factory.createPageSource(
-                session,
-                location,
-                0,
-                length,
-                length,
-                nowMillis,
-                schema,
-                tableColumns,
-                TupleDomain.all(),
-                Optional.empty(),
-                OptionalInt.empty(),
-                false,
-                NO_ACID_TRANSACTION);
+        final Optional<ReaderPageSource> pageSource = createReaderPageSource(fileSystemFactory,
+                hiveConfig, location, tableColumns, session);
 
         Assertions.assertTrue(pageSource.isEmpty(), "Expected empty page source when native Trino is disabled");
     }
@@ -168,7 +146,7 @@ public class IonPageSourceSmokeTest
             throws IOException
     {
         TrinoFileSystemFactory fileSystemFactory = new MemoryFileSystemFactory();
-        Location location = Location.of("memory:///test.ion");
+        Location location = Location.of(TEST_ION_LOCATION);
 
         HiveConfig hiveConfig = new HiveConfig();
         // enable Ion native trino integration for testing while the implementation is in progress
@@ -178,7 +156,7 @@ public class IonPageSourceSmokeTest
 
         writeIonTextFile(ionText, location, fileSystemFactory.create(session));
 
-        try (ConnectorPageSource pageSource = createPageSource(fileSystemFactory, hiveConfig, location, tableColumns,
+        try (ConnectorPageSource pageSource = createConnectorPageSource(fileSystemFactory, hiveConfig, location, tableColumns,
                 projectedColumns, session)) {
             final MaterializedResult result = MaterializedResult.materializeSourceDataStream(session, pageSource, projectedColumns.stream().map(HiveColumnHandle::getType).toList());
             Assertions.assertEquals(rowCount, result.getRowCount());
@@ -202,13 +180,69 @@ public class IonPageSourceSmokeTest
     /**
      * todo: this is very similar to what's in TestOrcPredicates, factor out.
      */
-    private static ConnectorPageSource createPageSource(
+    private static ConnectorPageSource createConnectorPageSource(
             TrinoFileSystemFactory fileSystemFactory,
             HiveConfig hiveConfig,
             Location location,
             List<HiveColumnHandle> tableColumns,
             List<HiveColumnHandle> projectedColumns,
             ConnectorSession session)
+            throws IOException
+    {
+        final PageSourceParameters pageSourceParameters = preparePageSourceParameters(
+                fileSystemFactory, hiveConfig, location, tableColumns, projectedColumns, session);
+
+        return HivePageSourceProvider.createHivePageSource(
+                        ImmutableSet.of(pageSourceParameters.factory()),
+                        session,
+                        location,
+                        OptionalInt.empty(),
+                        0,
+                        pageSourceParameters.length(),
+                        pageSourceParameters.length(),
+                        pageSourceParameters.nowMillis(),
+                        new Schema(ION.getSerde(), false, pageSourceParameters.tableProperties()),
+                        TupleDomain.all(),
+                        TESTING_TYPE_MANAGER,
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        false,
+                        NO_ACID_TRANSACTION,
+                        pageSourceParameters.columnMappings())
+                .orElseThrow();
+    }
+
+    private static Optional<ReaderPageSource> createReaderPageSource(TrinoFileSystemFactory fileSystemFactory,
+                                                                     HiveConfig hiveConfig, Location location,
+                                                                     List<HiveColumnHandle> tableColumns,
+                                                                     ConnectorSession session)
+            throws IOException
+    {
+        final PageSourceParameters pageSourceParameters = preparePageSourceParameters(
+                fileSystemFactory, hiveConfig, location, tableColumns, ImmutableList.of(), session);
+
+        return pageSourceParameters.factory().createPageSource(
+                session,
+                location,
+                0,
+                pageSourceParameters.length(),
+                pageSourceParameters.length(),
+                pageSourceParameters.nowMillis(),
+                new Schema(ION.getSerde(), false, pageSourceParameters.tableProperties()),
+                tableColumns,
+                TupleDomain.all(),
+                Optional.empty(),
+                OptionalInt.empty(),
+                false,
+                NO_ACID_TRANSACTION);
+    }
+
+    private static PageSourceParameters preparePageSourceParameters(TrinoFileSystemFactory fileSystemFactory,
+                                                                         HiveConfig hiveConfig, Location location,
+                                                                         List<HiveColumnHandle> tableColumns,
+                                                                         List<HiveColumnHandle> projectedColumns,
+                                                                         ConnectorSession session)
             throws IOException
     {
         IonPageSourceFactory factory = new IonPageSourceFactory(fileSystemFactory, hiveConfig);
@@ -231,25 +265,9 @@ public class IonPageSourceSmokeTest
                 .put(LIST_COLUMNS, tableColumns.stream().map(HiveColumnHandle::getName).collect(Collectors.joining(",")))
                 .put(LIST_COLUMN_TYPES, tableColumns.stream().map(HiveColumnHandle::getHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
                 .buildOrThrow();
-
-        return HivePageSourceProvider.createHivePageSource(
-                        ImmutableSet.of(factory),
-                        session,
-                        location,
-                        OptionalInt.empty(),
-                        0,
-                        length,
-                        length,
-                        nowMillis,
-                        new Schema(ION.getSerde(), false, tableProperties),
-                        TupleDomain.all(),
-                        TESTING_TYPE_MANAGER,
-                        Optional.empty(),
-                        Optional.empty(),
-                        Optional.empty(),
-                        false,
-                        NO_ACID_TRANSACTION,
-                        columnMappings)
-                .orElseThrow();
+        return new PageSourceParameters(factory, length, nowMillis, columnMappings, tableProperties);
     }
+
+    private record PageSourceParameters(IonPageSourceFactory factory, long length, long nowMillis, List<HivePageSourceProvider.ColumnMapping> columnMappings, Map<String, String> tableProperties)
+    { }
 }

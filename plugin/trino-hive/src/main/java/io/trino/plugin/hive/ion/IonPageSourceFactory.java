@@ -85,7 +85,7 @@ public class IonPageSourceFactory
             AcidTransaction transaction)
     {
         if (!this.nativeTrinoEnabled) {
-            // this allows user to defer to some default implementation(like ion-hive-serde) or throw an error based
+            // this allows user to defer to a legacy hive implementation(like ion-hive-serde) or throw an error based
             // on their use case
             return Optional.empty();
         }
