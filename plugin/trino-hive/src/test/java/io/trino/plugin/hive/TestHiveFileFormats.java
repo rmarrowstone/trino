@@ -134,9 +134,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.trino.hive.formats.ion.IonConstants.ERROR_ENCODING;
-import static io.trino.hive.formats.ion.IonConstants.ION_ENCODING;
-import static io.trino.hive.formats.ion.IonConstants.TEXT_ENCODING;
 import static io.trino.plugin.base.type.TrinoTimestampEncoderFactory.createTimestampEncoder;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
@@ -159,6 +156,8 @@ import static io.trino.plugin.hive.HiveTestUtils.SESSION;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.plugin.hive.HiveTestUtils.mapType;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_ENCODING_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.TEXT_ENCODING;
 import static io.trino.plugin.hive.util.HiveTypeTranslator.toHiveType;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
@@ -234,6 +233,7 @@ public final class TestHiveFileFormats
     private static final FileFormatDataSourceStats STATS = new FileFormatDataSourceStats();
     private static final ConnectorSession PARQUET_SESSION = getHiveSession(createParquetHiveConfig(false));
     private static final ConnectorSession PARQUET_SESSION_USE_NAME = getHiveSession(createParquetHiveConfig(true));
+    private static final String ERROR_ENCODING = "error_encoding";
 
     @DataProvider(name = "rowCount")
     public static Object[][] rowCountProvider()
@@ -402,13 +402,18 @@ public final class TestHiveFileFormats
                 .filter(tc -> !(tc.type instanceof MapType))
                 .collect(toList());
 
+        HiveConfig hiveConfig = new HiveConfig();
+        // enable Ion native trino integration for testing while the implementation is in progress
+        // TODO: In future this flag should change to `true` as default and then the following statement can be removed.
+        hiveConfig.setIonNativeTrinoEnabled(true);
+
         assertThatFileFormat(ION)
                 .withColumns(testColumns)
                 .withRowsCount(rowCount)
                 .withFileSizePadding(fileSizePadding)
-                .withTableProperties(ImmutableMap.of(ION_ENCODING, TEXT_ENCODING))
+                .withTableProperties(ImmutableMap.of(ION_ENCODING_PROPERTY, TEXT_ENCODING))
                 .withFileWriterFactory(fileSystemFactory -> new IonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
-                .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory));
+                .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory, hiveConfig));
     }
 
     @Test(dataProvider = "validRowAndFileSizePadding")
@@ -419,13 +424,19 @@ public final class TestHiveFileFormats
                 // todo: add support for maps to trino impl
                 .filter(tc -> !(tc.type instanceof MapType))
                 .collect(toList());
+
+        HiveConfig hiveConfig = new HiveConfig();
+        // enable Ion native trino integration for testing while the implementation is in progress
+        // TODO: In future this flag should change to `true` as default and then the following statement can be removed.
+        hiveConfig.setIonNativeTrinoEnabled(true);
+
         assertTrinoExceptionThrownBy(() -> assertThatFileFormat(ION)
                 .withColumns(testColumns)
                 .withRowsCount(rowCount)
                 .withFileSizePadding(fileSizePadding)
-                .withTableProperties(ImmutableMap.of(ION_ENCODING, ERROR_ENCODING))
+                .withTableProperties(ImmutableMap.of(ION_ENCODING_PROPERTY, ERROR_ENCODING))
                 .withFileWriterFactory(fileSystemFactory -> new IonFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER))
-                .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory)))
+                .isReadableByPageSource(fileSystemFactory -> new IonPageSourceFactory(fileSystemFactory, hiveConfig)))
                 .hasErrorCode(HIVE_WRITER_OPEN_ERROR)
                 .hasMessage("Error creating Ion Output");
     }

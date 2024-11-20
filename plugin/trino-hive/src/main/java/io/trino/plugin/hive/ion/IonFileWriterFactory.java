@@ -33,19 +33,16 @@ import io.trino.spi.type.TypeManager;
 
 import java.io.Closeable;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.stream.IntStream;
 
 import static io.trino.hive.formats.HiveClassNames.ION_OUTPUT_FORMAT;
-import static io.trino.hive.formats.ion.IonConstants.BINARY_ENCODING;
-import static io.trino.hive.formats.ion.IonConstants.TEXT_ENCODING;
-import static io.trino.hive.formats.ion.IonConstants.getIonEncoding;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_OPEN_ERROR;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
+import static io.trino.plugin.hive.ion.IonWriterOptions.getIonEncoding;
 import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
@@ -99,19 +96,13 @@ public class IonFileWriterFactory
                     .mapToObj(ordinal -> new Column(fileColumnNames.get(ordinal), fileColumnTypes.get(ordinal), ordinal))
                     .toList();
 
-            Boolean binaryEncoding = switch (getIonEncoding(schema).toLowerCase(Locale.ROOT)) {
-                case TEXT_ENCODING -> true;
-                case BINARY_ENCODING -> false;
-                default -> throw new IllegalArgumentException("Unsupported Ion encoding format");
-            };
-
             return Optional.of(new IonFileWriter(
                     outputFile.create(outputStreamMemoryContext),
                     outputStreamMemoryContext,
                     rollbackAction,
                     typeManager,
                     compressionCodec.getHiveCompressionKind(),
-                    binaryEncoding,
+                    getIonEncoding(schema),
                     columns));
         }
         catch (Exception e) {

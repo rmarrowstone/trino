@@ -53,15 +53,15 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.stream.Collectors;
 
-import static io.trino.hive.formats.ion.IonConstants.BINARY_ENCODING;
-import static io.trino.hive.formats.ion.IonConstants.ION_ENCODING;
-import static io.trino.hive.formats.ion.IonConstants.TEXT_ENCODING;
 import static io.trino.plugin.hive.HivePageSourceProvider.ColumnMapping.buildColumnMappings;
 import static io.trino.plugin.hive.HiveStorageFormat.ION;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.plugin.hive.HiveTestUtils.projectedColumn;
 import static io.trino.plugin.hive.HiveTestUtils.toHiveBaseColumnHandle;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
+import static io.trino.plugin.hive.ion.IonWriterOptions.BINARY_ENCODING;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_ENCODING_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.TEXT_ENCODING;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -160,7 +160,7 @@ public class IonPageSourceSmokeTest
             throws IOException
     {
         TrinoFileSystemFactory fileSystemFactory = new MemoryFileSystemFactory();
-        Location location = Location.of("memory:///test.ion");
+        Location location = Location.of(TEST_ION_LOCATION);
         ConnectorSession session = getHiveSession(new HiveConfig());
         writeTestData(session, fileSystemFactory, location, encoding, tableColumns);
         byte[] inputStreamBytes = fileSystemFactory.create(session)
@@ -346,11 +346,7 @@ public class IonPageSourceSmokeTest
                 length,
                 nowMillis);
 
-        final Map<String, String> tableProperties = ImmutableMap.<String, String>builder()
-                .put(LIST_COLUMNS, tableColumns.stream().map(HiveColumnHandle::getName).collect(Collectors.joining(",")))
-                .put(LIST_COLUMN_TYPES, tableColumns.stream().map(HiveColumnHandle::getHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
-                .buildOrThrow();
-        return new PageSourceParameters(factory, length, nowMillis, columnMappings, tableProperties);
+        return new PageSourceParameters(factory, length, nowMillis, columnMappings, getTablePropertiesWithEncoding(tableColumns, BINARY_ENCODING));
     }
 
     private record PageSourceParameters(IonPageSourceFactory factory, long length, long nowMillis, List<HivePageSourceProvider.ColumnMapping> columnMappings, Map<String, String> tableProperties)
@@ -364,7 +360,7 @@ public class IonPageSourceSmokeTest
         return ImmutableMap.<String, String>builder()
                 .put(LIST_COLUMNS, tableColumns.stream().map(HiveColumnHandle::getName).collect(Collectors.joining(",")))
                 .put(LIST_COLUMN_TYPES, tableColumns.stream().map(HiveColumnHandle::getHiveType).map(HiveType::toString).collect(Collectors.joining(",")))
-                .put(ION_ENCODING, encoding)
+                .put(ION_ENCODING_PROPERTY, encoding)
                 .buildOrThrow();
     }
 }
