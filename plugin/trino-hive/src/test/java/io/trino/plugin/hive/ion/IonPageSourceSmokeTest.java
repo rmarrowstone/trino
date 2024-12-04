@@ -73,6 +73,8 @@ import static java.util.stream.Collectors.toList;
 
 /**
  * Most basic test to reflect PageSource-fu is wired up correctly.
+ * More comprehensive tests, with assertions on values are in the TestIonFormat test
+ * in the lib/trino-hive sub-module.
  */
 public class IonPageSourceSmokeTest
 {
@@ -113,7 +115,7 @@ public class IonPageSourceSmokeTest
     }
 
     @Test
-    public void testProjectedColumn()
+    public void testNestedProjection()
             throws IOException
     {
         final RowType spamType = RowType.rowType(field("nested_to_prune", INTEGER), field("eggs", INTEGER));
@@ -126,10 +128,8 @@ public class IonPageSourceSmokeTest
         assertRowCount(
                 tableColumns,
                 projectedColumns,
-                // the data below reflects that "ham" is not decoded, that column is pruned
-                // "nested_to_prune" is decoded, however, because nested fields are not pruned, yet.
-                // so this test will fail if you change that to something other than an int
-                "{ spam: { nested_to_prune: 31, eggs: 12 }, ham: exploding }",
+                // decoding either 'ham' or 'nested_to_prune' would result in an error
+                "{ spam: { nested_to_prune: splodysplode, eggs: 12 }, ham: exploding }",
                 1);
     }
 
