@@ -13,18 +13,28 @@
  */
 package io.trino.hive.formats.ion;
 
-import com.amazon.ion.IonException;
-import com.amazon.ion.IonReader;
-import io.trino.spi.PageBuilder;
+import io.trino.spi.type.Type;
 
-public interface IonDecoder
+import java.util.List;
+import java.util.Optional;
+
+public record DecoderColumn(List<String> path, Type type, int position)
 {
-    /**
-     * Reads the _current_ top-level-value from the IonReader.
-     * <p>
-     * Expects that the calling code has called IonReader.next()
-     * to position the reader at the value to be decoded.
-     */
-    void decode(IonReader ionReader, PageBuilder pageBuilder)
-            throws IonException;
+    Optional<String> head()
+    {
+        if (path.isEmpty()) {
+            return Optional.empty();
+        }
+        else {
+            return Optional.of(path.getFirst());
+        }
+    }
+
+    DecoderColumn tail()
+    {
+        if (path.isEmpty()) {
+            throw new IllegalArgumentException("Cannot take tail of empty path!");
+        }
+        return new DecoderColumn(path.subList(1, path.size()), type, position);
+    }
 }
