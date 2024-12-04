@@ -13,26 +13,56 @@
  */
 package io.trino.hive.formats.ion;
 
+import com.amazon.ion.IonBool;
 import com.amazon.ion.IonDatagram;
+import com.amazon.ion.IonDecimal;
 import com.amazon.ion.IonException;
+import com.amazon.ion.IonFloat;
 import com.amazon.ion.IonReader;
+import com.amazon.ion.IonString;
+import com.amazon.ion.IonSymbol;
 import com.amazon.ion.IonSystem;
 import com.amazon.ion.IonWriter;
 import com.amazon.ion.Timestamp;
 import com.amazon.ion.system.IonReaderBuilder;
 import com.amazon.ion.system.IonSystemBuilder;
+import com.amazon.ionhiveserde.IonHiveSerDe;
+import com.amazon.ionhiveserde.objectinspectors.IonFloatToDoubleObjectInspector;
+import com.amazon.ionhiveserde.objectinspectors.IonIntToTinyIntObjectInspector;
+import com.amazon.ionhiveserde.objectinspectors.IonNumberToDecimalObjectInspector;
+import com.amazon.ionhiveserde.objectinspectors.IonTextToVarcharObjectInspector;
+import com.amazon.ionhiveserde.objectinspectors.IonValueToStringObjectInspector;
+import com.google.common.collect.ImmutableList;
+import io.trino.hive.formats.FormatTestUtils;
 import io.trino.hive.formats.line.Column;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BooleanType;
+import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.SqlDecimal;
 import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.TinyintType;
+import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
+import io.trino.spi.type.VarcharType;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.common.type.HiveChar;
+import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.common.type.HiveVarchar;
+import org.apache.hadoop.hive.serde2.Deserializer;
+import org.apache.hadoop.hive.serde2.SerDeException;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.StructField;
+import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+import org.apache.hadoop.io.BooleanWritable;
+import org.apache.hadoop.io.DoubleWritable;
+import org.apache.hadoop.io.Text;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -40,7 +70,9 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Properties;
 import java.util.stream.IntStream;
 
 import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
@@ -49,10 +81,18 @@ import static io.trino.hive.formats.FormatTestUtils.toPage;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static java.math.RoundingMode.HALF_UP;
+import static java.util.stream.Collectors.joining;
+import static org.apache.hadoop.hive.serde.serdeConstants.LIST_COLUMNS;
+import static org.apache.hadoop.hive.serde.serdeConstants.LIST_COLUMN_TYPES;
+import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_LIB;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestIonFormat
 {
+    private static final String FAIL_ON_OVERFLOW = "ion.fail_on_overflow";
+
     @Test
     public void testSuperBasicStruct()
             throws IOException
@@ -258,6 +298,216 @@ public class TestIonFormat
             List<Object> actual = readTrinoValues(columns, pageBuilder.build(), i);
             assertColumnValuesEquals(columns, actual, expected[i]);
         }
+    }
+
+    private static Deserializer createHiveDeserializer(List<Column> columns, boolean failOnOverflow)
+            throws SerDeException
+    {
+        Configuration configuration = new Configuration(false);
+        Properties schema = new Properties();
+        schema.put(LIST_COLUMNS, columns.stream()
+                .sorted(Comparator.comparing(Column::ordinal))
+                .map(Column::name)
+                .collect(joining(",")));
+        schema.put(LIST_COLUMN_TYPES, columns.stream()
+                .sorted(Comparator.comparing(Column::ordinal))
+                .map(Column::type)
+                .map(FormatTestUtils::getJavaObjectInspector)
+                .map(ObjectInspector::getTypeName)
+                .collect(joining(",")));
+        schema.put(FAIL_ON_OVERFLOW, Boolean.toString(failOnOverflow));
+        Deserializer deserializer = new IonHiveSerDe();
+        deserializer.initialize(configuration, schema);
+        configuration.set(SERIALIZATION_LIB, deserializer.getClass().getName());
+        return deserializer;
+    }
+
+    private static void assertValue(Type type, String ionValue, Object expected) throws SerDeException {
+        assertValueHive(type, ionValue, expected,false);
+        assertValueTrino(type, ionValue, expected);
+    }
+
+    private static void assertValueTrino(Type type, String ionValue, Object expected)
+    {
+        String ionText = "{test : " + ionValue + "}";
+        List<Column> columns = ImmutableList.of(new Column("test", type, 33));
+        IonDecoder decoder = IonDecoderFactory.buildDecoder(List.of(new Column("test", type, 33)));
+        IonReader ionReader = IonReaderBuilder.standard().build(ionText);
+        PageBuilder pageBuilder = new PageBuilder(1,
+                List.of(type));
+        assertThat(ionReader.next()).isNotNull();
+        pageBuilder.declarePosition();
+        decoder.decode(ionReader, pageBuilder);
+        Assertions.assertEquals(columns.getFirst().type().getObjectValue(null, pageBuilder.build().getBlock(0), 0), expected);
+    }
+
+    private static void assertValueHive(Type type, String ionValue, Object expected, boolean failOnOverflow) throws SerDeException {
+        List<Column> columns = ImmutableList.of(new Column("test", type, 33));
+        String ionText = "{test: " + ionValue + "}";
+        Deserializer deserializer = createHiveDeserializer(columns, failOnOverflow);
+        Object rowData = deserializer.deserialize(new Text(ionText));
+
+        StructObjectInspector rowInspector = (StructObjectInspector) deserializer.getObjectInspector();
+        for (Column column : columns) {
+            StructField field = rowInspector.getStructFieldRef(column.name());
+            Object fieldValue = rowInspector.getStructFieldData(rowData, field);
+            ObjectInspector fieldObjectInspector = field.getFieldObjectInspector();
+            switch (column.type()) {
+                case VarcharType _ -> {
+                    String result =
+                            ((IonValueToStringObjectInspector) fieldObjectInspector).getPrimitiveJavaObject(fieldValue);
+                    Assertions.assertEquals(result, expected);
+                    return;
+                }
+                case DecimalType _ -> {
+                    if (fieldValue instanceof HiveDecimal decimal) {
+                        DecimalType decimalType = (DecimalType) type;
+                        // writable messes with the scale so rescale the values to the Trino type
+                        BigDecimal bigDecimal = decimal.bigDecimalValue();
+                        bigDecimal = bigDecimal.setScale(decimalType.getScale(), HALF_UP);
+                        if (bigDecimal.precision() > decimalType.getPrecision()) {
+                            throw new IllegalArgumentException("decimal precision larger than column precision");
+                        }
+                        Assertions.assertEquals(bigDecimal, expected);
+                        return;
+                    } else if (fieldValue instanceof IonDecimal decimal) {
+                        HiveDecimal hiveDecimal =
+                                ((IonNumberToDecimalObjectInspector) fieldObjectInspector).getPrimitiveJavaObject(decimal);
+                        DecimalType decimalType = (DecimalType) type;
+                        // writable messes with the scale so rescale the values to the Trino type
+                        BigDecimal bigDecimal = hiveDecimal.bigDecimalValue();
+                        bigDecimal = bigDecimal.setScale(decimalType.getScale(), HALF_UP);
+                        if (bigDecimal.precision() > decimalType.getPrecision()) {
+                            throw new IllegalArgumentException("decimal precision larger than column precision");
+                        }
+                        Assertions.assertEquals(bigDecimal, expected);
+                        return;
+                    }
+                }
+                case TinyintType _ -> {
+                    Object result =
+                            ((IonIntToTinyIntObjectInspector) fieldObjectInspector).getPrimitiveJavaObject(fieldValue);
+                    Assertions.assertEquals(result, expected);
+                }
+                //TODO: Modify this to add more cases when adding more tests for a trino type
+                default -> throw new IllegalStateException("Unexpected value: " + column.type());
+            }
+
+        }
+    }
+
+    private static void assertValueFails(Type type, String ionValue) {
+        assertValueFailsHive(type, ionValue, false);
+        assertValueFailsTrino(type, ionValue);
+    }
+
+    private static void assertValueFails(Type type, String ionValue, boolean failOnOverflow)
+    {
+        assertValueFailsHive(type, ionValue, failOnOverflow);
+        assertValueFailsTrino(type, ionValue);
+    }
+
+    private static void assertValueFailsTrino(Type type, String ionValue)
+    {
+        String ionText = "{test : " + ionValue + "}";
+        IonDecoder decoder = IonDecoderFactory.buildDecoder(List.of(new Column("test", type, 33)));
+        assertThatThrownBy(() -> {
+            IonReader ionReader = IonReaderBuilder.standard().build(ionText);
+            PageBuilder pageBuilder = new PageBuilder(1,
+                    List.of(type));
+            assertThat(ionReader.next()).isNotNull();
+            pageBuilder.declarePosition();
+            decoder.decode(ionReader, pageBuilder);
+        }).isInstanceOf(Exception.class);
+    }
+
+    private static void assertValueFailsHive(Type type, String ionValue, boolean failOnOverflow)
+    {
+        List<Column> columns = ImmutableList.of(new Column("test", type, 33));
+        String ionText = "{test: " + ionValue + "}";
+        assertThatThrownBy(() -> {
+            Deserializer deserializer = createHiveDeserializer(columns, failOnOverflow);
+            Object rowData = deserializer.deserialize(new Text(ionText));
+
+            StructObjectInspector rowInspector = (StructObjectInspector) deserializer.getObjectInspector();
+            for (Column column : columns) {
+                StructField field = rowInspector.getStructFieldRef(column.name());
+                Object fieldValue = rowInspector.getStructFieldData(rowData, field);
+                ObjectInspector fieldObjectInspector = field.getFieldObjectInspector();
+                 switch (column.type()) {
+                     case BooleanType _ -> {
+                         if (fieldValue instanceof BooleanWritable booleanWritable) {
+                             booleanWritable.get();
+                             return;
+                         } else if (fieldValue instanceof IonBool booleanValue) {
+                             booleanValue.booleanValue();
+                             return;
+                         }
+                     }
+                     case VarcharType _ -> {
+                         if (fieldValue instanceof HiveVarchar varchar) {
+                             varchar.getValue();
+                             return;
+                         } else if (fieldValue instanceof IonString string) {
+                             string.stringValue();
+                             return;
+                         } else if (fieldValue instanceof IonSymbol symbol) {
+                             ((IonTextToVarcharObjectInspector) fieldObjectInspector).getPrimitiveJavaObject(symbol);
+                             symbol.stringValue();
+                             return;
+                         }
+                     }
+                     case CharType _ -> {
+                         if (fieldValue instanceof HiveChar chars) {
+                             chars.getValue();
+                             return;
+                         } else if (fieldValue instanceof IonString string) {
+                             string.stringValue();
+                             return;
+                         } else if (fieldValue instanceof IonSymbol symbol) {
+                             symbol.stringValue();
+                             return;
+                         }
+                     }
+                     case DoubleType _ -> {
+                         if (fieldValue instanceof DoubleWritable doubleWritable) {
+                             doubleWritable.get();
+                             return;
+                         } else if (fieldValue instanceof IonFloat floatValue) {
+                             ((IonFloatToDoubleObjectInspector)fieldObjectInspector).getPrimitiveJavaObject(floatValue);
+                             floatValue.doubleValue();
+                             return;
+                         }
+                     }
+                     case DecimalType _ -> {
+                         if (fieldValue instanceof HiveDecimal decimal) {
+                             DecimalType decimalType = (DecimalType) type;
+                             // writable messes with the scale so rescale the values to the Trino type
+                             BigDecimal bigDecimal = decimal.bigDecimalValue();
+                             bigDecimal = bigDecimal.setScale(decimalType.getScale(), HALF_UP);
+                             if (bigDecimal.precision() > decimalType.getPrecision()) {
+                                 throw new IllegalArgumentException("decimal precision larger than column precision");
+                             }
+                             return;
+                         } else if (fieldValue instanceof IonDecimal decimal) {
+                             HiveDecimal hiveDecimal =
+                                     ((IonNumberToDecimalObjectInspector) fieldObjectInspector).getPrimitiveJavaObject(decimal);
+                             DecimalType decimalType = (DecimalType) type;
+                             // writable messes with the scale so rescale the values to the Trino type
+                             BigDecimal bigDecimal = hiveDecimal.bigDecimalValue();
+                             bigDecimal = bigDecimal.setScale(decimalType.getScale(), HALF_UP);
+                             if (bigDecimal.precision() > decimalType.getPrecision()) {
+                                 throw new IllegalArgumentException("decimal precision larger than column precision");
+                             }
+                             return;
+                         }
+                     }
+                     //TODO: Modify this to add more cases when adding more tests for a trino type
+                     default -> throw new IllegalStateException("Unexpected value: " + column.type());
+                 }
+                 throw new IllegalStateException("Unexpected value: " + column.type());
+            }
+        });
     }
 
     /**
