@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.trino.hive.formats.line.Column;
-import io.trino.spi.PageBuilder;
 import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RowBlockBuilder;
@@ -70,10 +69,67 @@ public class IonDecoderFactory
      */
     public static IonDecoder buildDecoder(List<Column> columns)
     {
-        return RowDecoder.forFields(
+        SelectingDecoder rowDecoder = RowDecoder.forFields(
                 columns.stream()
                         .map(c -> new RowType.Field(Optional.of(c.name()), c.type()))
                         .toList());
+
+        return (ionReader, pageBuilder) -> {
+            if (ionReader.getType() != IonType.STRUCT) {
+                throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
+            }
+            if (ionReader.isNullValue()) {
+                // todo: is this an error or just a null value?
+                //       i think in the hive serde it's a null record.
+                //       also this is going to have to go away once we start wrapping these
+                throw new IonException("Top Level Values must not be null!");
+            }
+            rowDecoder.decode(ionReader, pageBuilder::getBlockBuilder);
+        };
+    }
+
+    /**
+     * This interface defines an abstraction for decoders that may be building blocks directly
+     * within the PageBuilder or that are fields within a RowBlockBuilder.
+     * It abstracts any actual block builder manipulation to allow for 'pass-through' or
+     * 'dereference' decoders that don't manipulate BlockBuilders themselves but may trigger
+     * child decoders that do.
+     */
+    private interface SelectingDecoder
+    {
+        void decode(IonReader reader, IntFunction<BlockBuilder> builderSelector);
+
+        void absent(IntFunction<BlockBuilder> builderSelector);
+
+        void reset(IntFunction<BlockBuilder> builderSelector);
+    }
+
+    /**
+     * Closes over the position for selecting a BlockBuilder from the parent builder.
+     */
+    private static SelectingDecoder selectingDecoderFor(BlockDecoder decoder, int position) {
+        return new SelectingDecoder() {
+
+            @Override
+            public void decode(IonReader reader, IntFunction<BlockBuilder> builderSelector)
+                    throws IonException
+            {
+                decoder.decode(reader, builderSelector.apply(position));
+            }
+
+            @Override
+            public void reset(IntFunction<BlockBuilder> builderSelector)
+            {
+                BlockBuilder builder = builderSelector.apply(position);
+                builder.resetTo(builder.getPositionCount() - 1);
+            }
+
+            @Override
+            public void absent(IntFunction<BlockBuilder> builderSelector)
+            {
+                builderSelector.apply(position).appendNull();
+            }
+        };
     }
 
     private interface BlockDecoder
@@ -135,36 +191,21 @@ public class IonDecoderFactory
      * Class is both the Top-Level-Value Decoder and the Row Decoder for nested
      * structs.
      */
-    private record RowDecoder(Map<String, Integer> fieldPositions, List<BlockDecoder> fieldDecoders)
-            implements IonDecoder, BlockDecoder
+    private record RowDecoder(Map<String, Integer> fieldPositions, List<SelectingDecoder> fieldDecoders)
+            implements BlockDecoder, SelectingDecoder
     {
         private static RowDecoder forFields(List<RowType.Field> fields)
         {
-            ImmutableList.Builder<BlockDecoder> decoderBuilder = ImmutableList.builder();
+            ImmutableList.Builder<SelectingDecoder> decoderBuilder = ImmutableList.builder();
             ImmutableMap.Builder<String, Integer> fieldPositionBuilder = ImmutableMap.builder();
             IntStream.range(0, fields.size())
                     .forEach(position -> {
                         RowType.Field field = fields.get(position);
-                        decoderBuilder.add(decoderForType(field.getType()));
+                        decoderBuilder.add(selectingDecoderFor(decoderForType(field.getType()), position));
                         fieldPositionBuilder.put(field.getName().get().toLowerCase(Locale.ROOT), position);
                     });
 
             return new RowDecoder(fieldPositionBuilder.buildOrThrow(), decoderBuilder.build());
-        }
-
-        @Override
-        public void decode(IonReader ionReader, PageBuilder pageBuilder)
-        {
-            // todo: we could also map an Ion List to a Struct
-            if (ionReader.getType() != IonType.STRUCT) {
-                throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
-            }
-            if (ionReader.isNullValue()) {
-                // todo: is this an error or just a null value?
-                //       i think in the hive serde it's a null record.
-                throw new IonException("Top Level Values must not be null!");
-            }
-            decode(ionReader, pageBuilder::getBlockBuilder);
         }
 
         @Override
@@ -174,35 +215,51 @@ public class IonDecoderFactory
                     .buildEntry(fieldBuilders -> decode(ionReader, fieldBuilders::get));
         }
 
-        // assumes that the reader is positioned on a non-null struct value
-        private void decode(IonReader ionReader, IntFunction<BlockBuilder> blockSelector)
+        @Override
+        public void decode(IonReader ionReader, IntFunction<BlockBuilder> builderSelector)
         {
+            // assumes that the reader is positioned on a non-null struct value
             boolean[] encountered = new boolean[fieldDecoders.size()];
             ionReader.stepIn();
 
             while (ionReader.next() != null) {
-                // todo: case insensitivity
                 final Integer fieldIndex = fieldPositions.get(ionReader.getFieldName().toLowerCase(Locale.ROOT));
                 if (fieldIndex == null) {
                     continue;
                 }
-                final BlockBuilder blockBuilder = blockSelector.apply(fieldIndex);
+                SelectingDecoder decoder = fieldDecoders.get(fieldIndex);
                 if (encountered[fieldIndex]) {
-                    blockBuilder.resetTo(blockBuilder.getPositionCount() - 1);
+                    decoder.reset(builderSelector);
                 }
                 else {
                     encountered[fieldIndex] = true;
                 }
-                fieldDecoders.get(fieldIndex).decode(ionReader, blockBuilder);
+                decoder.decode(ionReader, builderSelector);
             }
 
             for (int i = 0; i < encountered.length; i++) {
                 if (!encountered[i]) {
-                    blockSelector.apply(i).appendNull();
+                    fieldDecoders.get(i).absent(builderSelector);
                 }
             }
 
             ionReader.stepOut();
+        }
+
+        @Override
+        public void reset(IntFunction<BlockBuilder> builderSelector)
+        {
+            for (SelectingDecoder fieldDecoder : fieldDecoders) {
+                fieldDecoder.reset(builderSelector);
+            }
+        }
+
+        @Override
+        public void absent(IntFunction<BlockBuilder> builderSelector)
+        {
+            for (SelectingDecoder fieldDecoder : fieldDecoders) {
+                fieldDecoder.absent(builderSelector);
+            }
         }
     }
 

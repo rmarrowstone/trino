@@ -25,6 +25,6 @@ public interface IonDecoder
      * Expects that the calling code has called IonReader.next()
      * to position the reader at the value to be decoded.
      */
-    void decode(IonReader reader, PageBuilder builder)
+    void decode(IonReader reader, PageBuilder pageBuilder)
             throws IonException;
 }
