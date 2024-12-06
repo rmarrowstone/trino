@@ -21,17 +21,20 @@ import com.amazon.ion.IonWriter;
 import com.amazon.ion.Timestamp;
 import com.amazon.ion.system.IonReaderBuilder;
 import com.amazon.ion.system.IonSystemBuilder;
+import com.google.common.collect.ImmutableMap;
 import io.trino.hive.formats.line.Column;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.SqlDecimal;
 import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.TypeOperators;
 import io.trino.spi.type.VarbinaryType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -53,6 +56,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestIonFormat
 {
+    private static final TypeOperators TYPE_OPERATORS = new TypeOperators();
+
     @Test
     public void testSuperBasicStruct()
             throws IOException
@@ -63,6 +68,20 @@ public class TestIonFormat
                         field("bar", VARCHAR)),
                 "{ bar: baz, foo: 31, ignored: true }",
                 List.of(31, "baz"));
+    }
+
+    @Test
+    public void testMap()
+            throws IOException
+    {
+        MapType mapType = new MapType(VARCHAR, INTEGER, TYPE_OPERATORS);
+        assertValues(
+                RowType.rowType(field("foo", mapType)),
+                "{ foo: { a: 1, a: 2, b: 5 } }",
+                List.of(ImmutableMap.builder()
+                        .put("a", 2)
+                        .put("b", 5)
+                        .buildOrThrow()));
     }
 
     @Test
@@ -218,13 +237,22 @@ public class TestIonFormat
                 new Column("sequencer", new ArrayType(INTEGER), 4),
                 new Column("struction", RowType.rowType(
                         field("foo", INTEGER),
-                        field("bar", VARCHAR)), 5));
+                        field("bar", VARCHAR)), 5),
+                new Column("map", new MapType(VARCHAR, INTEGER, TYPE_OPERATORS), 6));
 
-        List<Object> row1 = List.of(17, "something", true, new SqlVarbinary(new byte[] {(byte) 0xff}), List.of(1, 2, 3), List.of(51, "baz"));
-        List<Object> row2 = List.of(31, "somebody", false, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa}), List.of(7, 8, 9), List.of(67, "qux"));
+        List<Object> row1 = List.of(17, "something", true, new SqlVarbinary(new byte[] {(byte) 0xff}), List.of(1, 2,
+                3), List.of(51, "baz"), ImmutableMap.builder()
+                .put("a", 2)
+                .put("b", 5)
+                .buildOrThrow());
+        List<Object> row2 = List.of(31, "somebody", false, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa}),
+                List.of(7, 8, 9), List.of(67, "qux"), ImmutableMap.builder()
+                        .put("foo", 12)
+                        .put("bar", 50)
+                        .buildOrThrow());
         String ionText = """
-                { magic_num:17, some_text:"something", is_summer:true, byte_clob:{{/w==}}, sequencer:[1,2,3], struction:{ foo:51, bar:"baz"}}
-                { magic_num:31, some_text:"somebody", is_summer:false, byte_clob:{{Aao=}}, sequencer:[7,8,9], struction:{ foo:67, bar:"qux"}}
+                { magic_num:17, some_text:"something", is_summer:true, byte_clob:{{/w==}}, sequencer:[1,2,3], struction:{ foo:51, bar:"baz"}, map: {a: 2, b: 5}}
+                { magic_num:31, some_text:"somebody", is_summer:false, byte_clob:{{Aao=}}, sequencer:[7,8,9], struction:{ foo:67, bar:"qux"}, map: {foo: 12, bar: 50}}
                 """;
 
         Page page = toPage(columns, row1, row2);
