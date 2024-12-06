@@ -19,8 +19,6 @@ import com.amazon.ion.IonType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
-import io.trino.hive.formats.line.Column;
-import io.trino.spi.PageBuilder;
 import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RowBlockBuilder;
@@ -51,11 +49,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 public class IonDecoderFactory
 {
@@ -63,19 +59,96 @@ public class IonDecoderFactory
 
     /**
      * Builds a decoder for the given columns.
-     * <p>
-     * The decoder expects to decode the _current_ Ion Value.
+     * <br>
+     * The decoder expects to decode the _current_ Ion Value, meaning that the caller
+     * is responsible for iterating over the Ion value stream by calling next() until
+     * the stream is exhausted.
+     * <br>
      * It also expects that the calling code will manage the PageBuilder.
-     * <p>
      */
-    public static IonDecoder buildDecoder(List<Column> columns)
+    public static IonDecoder buildDecoder(List<DecoderColumn> columns)
     {
-        return RowDecoder.forFields(
-                columns.stream()
-                        .map(c -> new RowType.Field(Optional.of(c.name()), c.type()))
-                        .toList());
+        DecoderInstructions instructions = DecoderInstructions.forColumns(columns);
+        IndirectDecoder decoder = decoderForInstructions(instructions);
+        return (ionReader, pageBuilder) -> {
+            decoder.decode(ionReader, pageBuilder::getBlockBuilder);
+        };
     }
 
+    private static IndirectDecoder decoderForInstructions(DecoderInstructions instructions)
+    {
+        return switch (instructions) {
+            case DecoderInstructions.StructFields structFields -> {
+                Map<String, IndirectDecoder> decoders = structFields.fields().entrySet().stream()
+                        .collect(Collectors.toMap(Map.Entry::getKey, e -> decoderForInstructions(e.getValue())));
+                yield new RowDecoder(decoders);
+            }
+            case DecoderInstructions.DecodeValue decodeColumn -> indirectDecoderFor(decoderForType(decodeColumn.type()), decodeColumn.blockPosition());
+            // todo: this likely won't work when someone is extracting a non-struct as the single column... grrrrr...
+            case DecoderInstructions.Empty _ -> new RowDecoder(Map.of());
+        };
+    }
+
+    /**
+     * This interface abstracts any actual block builder manipulation to allow for 'pass-through'
+     * or 'dereference' decoders that don't manipulate BlockBuilders themselves but have children
+     * or other ancestors that do.
+     */
+    private interface IndirectDecoder
+    {
+        /**
+         * Decode the value and any descendents from the current ionReader position.
+         */
+        void decode(IonReader ionReader, IntFunction<BlockBuilder> builderSelector);
+
+        /**
+         * Denote an expected value as absent or missing to the descendents.
+         * Practically this is treated as a null.
+         */
+        void absent(IntFunction<BlockBuilder> builderSelector);
+
+        /**
+         * Reset any descendent blocks to the previous position.
+         * Used when a duplicate key is encountered in a Struct.
+         */
+        void reset(IntFunction<BlockBuilder> builderSelector);
+    }
+
+    /**
+     * Closes over the position for selecting a BlockBuilder from the parent builder.
+     * <br>
+     * Handles reset and absent events from a non-materialized parent.
+     */
+    private static IndirectDecoder indirectDecoderFor(BlockDecoder decoder, int position)
+    {
+        return new IndirectDecoder()
+        {
+            @Override
+            public void decode(IonReader ionReader, IntFunction<BlockBuilder> builderSelector)
+                    throws IonException
+            {
+                decoder.decode(ionReader, builderSelector.apply(position));
+            }
+
+            @Override
+            public void reset(IntFunction<BlockBuilder> builderSelector)
+            {
+                BlockBuilder builder = builderSelector.apply(position);
+                builder.resetTo(builder.getPositionCount() - 1);
+            }
+
+            @Override
+            public void absent(IntFunction<BlockBuilder> builderSelector)
+            {
+                builderSelector.apply(position).appendNull();
+            }
+        };
+    }
+
+    /**
+     * BlockDecoders work directly on the BlockBuilders, actually decoding Ion
+     * data and putting it into blocks.
+     */
     private interface BlockDecoder
     {
         void decode(IonReader reader, BlockBuilder builder);
@@ -96,7 +169,7 @@ public class IonDecoderFactory
             case DecimalType t -> wrapDecoder(decimalDecoder(t), IonType.DECIMAL);
             case VarcharType _, CharType _ -> wrapDecoder(stringDecoder, IonType.STRING, IonType.SYMBOL);
             case VarbinaryType _ -> wrapDecoder(binaryDecoder, IonType.BLOB, IonType.CLOB);
-            case RowType r -> wrapDecoder(RowDecoder.forFields(r.getFields()), IonType.STRUCT);
+            case RowType r -> wrapDecoder(new RowDecoder(r.getFields()), IonType.STRUCT);
             case ArrayType a -> wrapDecoder(new ArrayDecoder(decoderForType(a.getElementType())), IonType.LIST, IonType.SEXP);
             default -> throw new IllegalArgumentException(String.format("Unsupported type: %s", type));
         };
@@ -132,77 +205,111 @@ public class IonDecoderFactory
     }
 
     /**
-     * Class is both the Top-Level-Value Decoder and the Row Decoder for nested
-     * structs.
+     * This class acts as both the "indirect" decoder for top-level structs and dereference paths
+     * and as the "direct" BlockDecoder for nested RowTypes.
+     * When used for a nested RowType (within another materialized RowType), it is expected to be
+     * wrapped with the `indirectDecoderFor`, as that will work on the builder for the row itself,
+     * which is what you want for that usage.
      */
-    private record RowDecoder(Map<String, Integer> fieldPositions, List<BlockDecoder> fieldDecoders)
-            implements IonDecoder, BlockDecoder
+    private static class RowDecoder
+            implements BlockDecoder, IndirectDecoder
     {
-        private static RowDecoder forFields(List<RowType.Field> fields)
-        {
-            ImmutableList.Builder<BlockDecoder> decoderBuilder = ImmutableList.builder();
-            ImmutableMap.Builder<String, Integer> fieldPositionBuilder = ImmutableMap.builder();
-            IntStream.range(0, fields.size())
-                    .forEach(position -> {
-                        RowType.Field field = fields.get(position);
-                        decoderBuilder.add(decoderForType(field.getType()));
-                        fieldPositionBuilder.put(field.getName().get().toLowerCase(Locale.ROOT), position);
-                    });
+        private final Map<String, Integer> fieldPositions;
+        private final List<IndirectDecoder> fieldDecoders;
 
-            return new RowDecoder(fieldPositionBuilder.buildOrThrow(), decoderBuilder.build());
+        RowDecoder(List<RowType.Field> fields)
+        {
+            ImmutableMap.Builder<String, Integer> positionBuilder = ImmutableMap.builder();
+            ImmutableList.Builder<IndirectDecoder> decoderBuilder = ImmutableList.builder();
+            int position = 0;
+            for (RowType.Field field : fields) {
+                decoderBuilder.add(indirectDecoderFor(decoderForType(field.getType()), position));
+                positionBuilder.put(field.getName().get().toLowerCase(Locale.ROOT), position);
+                position++;
+            }
+
+            fieldPositions = positionBuilder.buildOrThrow();
+            fieldDecoders = decoderBuilder.build();
         }
 
-        @Override
-        public void decode(IonReader ionReader, PageBuilder pageBuilder)
+        RowDecoder(Map<String, IndirectDecoder> decoderMap)
         {
-            // todo: we could also map an Ion List to a Struct
-            if (ionReader.getType() != IonType.STRUCT) {
-                throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
+            ImmutableMap.Builder<String, Integer> positionBuilder = ImmutableMap.builder();
+            ImmutableList.Builder<IndirectDecoder> decoderBuilder = ImmutableList.builder();
+            int position = 0;
+            for (Map.Entry<String, IndirectDecoder> field : decoderMap.entrySet()) {
+                decoderBuilder.add(field.getValue());
+                positionBuilder.put(field.getKey().toLowerCase(Locale.ROOT), position++);
             }
-            if (ionReader.isNullValue()) {
-                // todo: is this an error or just a null value?
-                //       i think in the hive serde it's a null record.
-                throw new IonException("Top Level Values must not be null!");
-            }
-            decode(ionReader, pageBuilder::getBlockBuilder);
+            fieldPositions = positionBuilder.buildOrThrow();
+            fieldDecoders = decoderBuilder.build();
         }
 
         @Override
         public void decode(IonReader ionReader, BlockBuilder blockBuilder)
         {
             ((RowBlockBuilder) blockBuilder)
-                    .buildEntry(fieldBuilders -> decode(ionReader, fieldBuilders::get));
+                    .buildEntry(fieldBuilders -> decodeChildren(ionReader, fieldBuilders::get));
         }
 
-        // assumes that the reader is positioned on a non-null struct value
-        private void decode(IonReader ionReader, IntFunction<BlockBuilder> blockSelector)
+        @Override
+        public void decode(IonReader ionReader, IntFunction<BlockBuilder> builderSelector)
         {
+            if (ionReader.isNullValue()) {
+                absent(builderSelector);
+            }
+            else {
+                if (ionReader.getType() != IonType.STRUCT) {
+                    throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
+                }
+                decodeChildren(ionReader, builderSelector);
+            }
+        }
+
+        private void decodeChildren(IonReader ionReader, IntFunction<BlockBuilder> builderSelector)
+        {
+            // assumes that the reader is positioned on a non-null struct value
             boolean[] encountered = new boolean[fieldDecoders.size()];
             ionReader.stepIn();
 
             while (ionReader.next() != null) {
-                // todo: case insensitivity
                 final Integer fieldIndex = fieldPositions.get(ionReader.getFieldName().toLowerCase(Locale.ROOT));
                 if (fieldIndex == null) {
                     continue;
                 }
-                final BlockBuilder blockBuilder = blockSelector.apply(fieldIndex);
+                IndirectDecoder decoder = fieldDecoders.get(fieldIndex);
                 if (encountered[fieldIndex]) {
-                    blockBuilder.resetTo(blockBuilder.getPositionCount() - 1);
+                    decoder.reset(builderSelector);
                 }
                 else {
                     encountered[fieldIndex] = true;
                 }
-                fieldDecoders.get(fieldIndex).decode(ionReader, blockBuilder);
+                decoder.decode(ionReader, builderSelector);
             }
 
             for (int i = 0; i < encountered.length; i++) {
                 if (!encountered[i]) {
-                    blockSelector.apply(i).appendNull();
+                    fieldDecoders.get(i).absent(builderSelector);
                 }
             }
 
             ionReader.stepOut();
+        }
+
+        @Override
+        public void reset(IntFunction<BlockBuilder> builderSelector)
+        {
+            for (IndirectDecoder fieldDecoder : fieldDecoders) {
+                fieldDecoder.reset(builderSelector);
+            }
+        }
+
+        @Override
+        public void absent(IntFunction<BlockBuilder> builderSelector)
+        {
+            for (IndirectDecoder fieldDecoder : fieldDecoders) {
+                fieldDecoder.absent(builderSelector);
+            }
         }
     }
 

@@ -23,11 +23,12 @@ import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.hive.formats.compression.Codec;
 import io.trino.hive.formats.compression.CompressionKind;
+import io.trino.hive.formats.ion.DecoderColumn;
 import io.trino.hive.formats.ion.IonDecoder;
 import io.trino.hive.formats.ion.IonDecoderFactory;
-import io.trino.hive.formats.line.Column;
 import io.trino.plugin.hive.AcidInfo;
 import io.trino.plugin.hive.HiveColumnHandle;
+import io.trino.plugin.hive.HiveColumnProjectionInfo;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
 import io.trino.plugin.hive.ReaderColumns;
@@ -42,6 +43,7 @@ import io.trino.spi.predicate.TupleDomain;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -50,7 +52,7 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.hive.formats.HiveClassNames.ION_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
-import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
+import static io.trino.plugin.hive.HivePageSourceProvider.projectSufficientColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
 
@@ -104,13 +106,19 @@ public class IonPageSourceFactory
         }
 
         List<HiveColumnHandle> projectedReaderColumns = columns;
-        Optional<ReaderColumns> readerProjections = projectBaseColumns(columns);
+        Optional<ReaderColumns> readerProjections = projectSufficientColumns(columns);
 
         if (readerProjections.isPresent()) {
             projectedReaderColumns = readerProjections.get().get().stream()
                     .map(HiveColumnHandle.class::cast)
                     .collect(toImmutableList());
         }
+        PageBuilder pageBuilder = new PageBuilder(projectedReaderColumns.stream()
+                .map(HiveColumnHandle::getType)
+                .toList());
+
+        List<DecoderColumn> decoderColumns = getDecoderColumns(projectedReaderColumns);
+        IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
 
         TrinoFileSystem trinoFileSystem = trinoFileSystemFactory.create(session);
         TrinoInputFile inputFile = trinoFileSystem.newInputFile(path, estimatedFileSize);
@@ -131,13 +139,7 @@ public class IonPageSourceFactory
             IonReader ionReader = IonReaderBuilder
                     .standard()
                     .build(inputStream);
-            PageBuilder pageBuilder = new PageBuilder(projectedReaderColumns.stream()
-                    .map(HiveColumnHandle::getType)
-                    .toList());
-            List<Column> decoderColumns = projectedReaderColumns.stream()
-                    .map(hc -> new Column(hc.getName(), hc.getType(), hc.getBaseHiveColumnIndex()))
-                    .toList();
-            IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
+
             IonPageSource pageSource = new IonPageSource(ionReader, countingInputStream::getCount, decoder, pageBuilder);
 
             return Optional.of(new ReaderPageSource(pageSource, readerProjections));
@@ -145,5 +147,22 @@ public class IonPageSourceFactory
         catch (IOException e) {
             throw new TrinoException(HIVE_CANNOT_OPEN_SPLIT, splitError(e, path, start, length), e);
         }
+    }
+
+    private static List<DecoderColumn> getDecoderColumns(List<HiveColumnHandle> projectedReaderColumns)
+    {
+        List<DecoderColumn> decoderColumns = new LinkedList<>();
+        for (int i = 0; i < projectedReaderColumns.size(); i++) {
+            HiveColumnHandle columnHandle = projectedReaderColumns.get(i);
+
+            List<String> steps = new LinkedList<>();
+            steps.add(columnHandle.getBaseColumnName());
+            steps.addAll(columnHandle.getHiveColumnProjectionInfo()
+                    .map(HiveColumnProjectionInfo::getDereferenceNames)
+                    .orElse(List.of()));
+
+            decoderColumns.add(new DecoderColumn(steps, columnHandle.getType(), i));
+        }
+        return decoderColumns;
     }
 }

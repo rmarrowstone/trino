@@ -32,6 +32,7 @@ import io.trino.spi.type.SqlDecimal;
 import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -40,8 +41,8 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.stream.IntStream;
 
 import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
 import static io.trino.hive.formats.FormatTestUtils.readTrinoValues;
@@ -63,6 +64,35 @@ public class TestIonFormat
                         field("bar", VARCHAR)),
                 "{ bar: baz, foo: 31, ignored: true }",
                 List.of(31, "baz"));
+    }
+
+    @Test
+    public void testNullTlv()
+            throws IOException
+    {
+        List<Object> singleNullValue = new LinkedList<>();
+        singleNullValue.add(null);
+
+        assertValues(
+                RowType.rowType(field("foo", INTEGER)),
+                "null null.struct",
+                singleNullValue, singleNullValue);
+    }
+
+    @Test
+    public void testMistypedTlv()
+            throws IOException
+    {
+        List<Object> singleNullValue = new LinkedList<>();
+        singleNullValue.add(null);
+
+        Assertions.assertThrows(
+                IonException.class, () -> {
+                    assertValues(
+                            RowType.rowType(field("foo", INTEGER)),
+                            "31",
+                            singleNullValue);
+                });
     }
 
     @Test
@@ -134,17 +164,100 @@ public class TestIonFormat
                 List.of(List.of(17, 31, 51)));
     }
 
+    /**
+     * In addition to proving that nested rows work, this also
+     * proves that the handling of nested blocks is correct in the face
+     * of null-ness or duplication of the parent.
+     */
     @Test
-    public void testNestedStruct()
+    public void testNestedRows()
             throws IOException
     {
+        RowType rowType = RowType.rowType(
+                field("name", RowType.rowType(
+                        field("first", VARCHAR),
+                        field("last", VARCHAR))));
+
+        // standard
         assertValues(
-                RowType.rowType(
-                        field("name", RowType.rowType(
-                                field("first", VARCHAR),
-                                field("last", VARCHAR)))),
+                rowType,
                 "{ name: { first: Woody, last: Guthrie } }",
                 List.of(List.of("Woody", "Guthrie")));
+
+        // duplicated parent struct key
+        assertValues(
+                rowType,
+                "{ name: { first: Woody, last: Guthrie }, name: { first: Bob, last: Dylan} } { name: { first: Libba, last: Cotten } }",
+                List.of(List.of("Bob", "Dylan")), List.of(List.of("Libba", "Cotten")));
+
+        // absent parent struct key
+        List<Object> singleNullValue = new LinkedList<>();
+        singleNullValue.add(null);
+        assertValues(
+                rowType,
+                "{ } { name: { first: Woody, last: Guthrie } }",
+                singleNullValue, List.of(List.of("Woody", "Guthrie")));
+    }
+
+    /**
+     * In addition to proving that dereferencing fields in nested rows work,
+     * this also proves that the handling of nested blocks is correct in the face
+     * of null-ness or duplication of the parent.
+     * <br>
+     * This is distinct from the above because in this case the parent row is not
+     * materialized itself.
+     */
+    @Test
+    public void testDereferencedFieldInNestedRow()
+            throws IOException
+    {
+        DecoderColumn column = new DecoderColumn(
+                List.of("name", "first"),
+                VARCHAR,
+                0);
+
+        // standard
+        assertValues(
+                List.of(column),
+                "{ name: { first: Woody, last: Guthrie } }",
+                List.of("Woody"));
+
+        // duplicated parent struct key
+        assertValues(
+                List.of(column),
+                "{ name: { first: Woody, last: Guthrie }, name: { first: Bob, last: Dylan} } { name: { first: Libba, last: Cotten } }",
+                List.of("Bob"),
+                List.of("Libba"));
+
+        // absent parent struct key
+        List<Object> singleNullValue = new LinkedList<>();
+        singleNullValue.add(null);
+        assertValues(
+                List.of(column),
+                "{ } { name: { first: Woody, last: Guthrie } }",
+                singleNullValue,
+                List.of("Woody"));
+    }
+
+    @Test
+    public void testDereferencedSiblings()
+            throws IOException
+    {
+        List<DecoderColumn> columns = List.of(
+                new DecoderColumn(
+                        List.of("name", "first"),
+                        VARCHAR,
+                        0),
+                new DecoderColumn(
+                        List.of("name", "last"),
+                        VARCHAR,
+                        1));
+
+        assertValues(
+                columns,
+                "{ name: { first: Woody, last: Guthrie } } { name: { first: Libba, last: Cotten } }",
+                List.of("Woody", "Guthrie"),
+                List.of("Libba", "Cotten"));
     }
 
     @Test
@@ -231,19 +344,47 @@ public class TestIonFormat
         assertIonEquivalence(columns, page, ionText);
     }
 
+    // todo: change this to work with dereferences and paths
     private void assertValues(RowType rowType, String ionText, List<Object>... expected)
             throws IOException
     {
         List<RowType.Field> fields = rowType.getFields();
-        List<Column> columns = IntStream.range(0, fields.size())
-                .boxed()
-                .map(i -> {
-                    final RowType.Field field = fields.get(i);
-                    return new Column(field.getName().get(), field.getType(), i);
-                })
-                .toList();
-        IonDecoder decoder = IonDecoderFactory.buildDecoder(columns);
+        List<Column> columns = new LinkedList<>();
+        List<DecoderColumn> decoderColumns = new LinkedList<>();
+        for (int i = 0; i < fields.size(); i++) {
+            RowType.Field field = fields.get(i);
+            Type type = field.getType();
+            decoderColumns.add(new DecoderColumn(List.of(field.getName().get()), type, i));
+            columns.add(new Column(field.getName().get(), type, i));
+        }
+
+        IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
         PageBuilder pageBuilder = new PageBuilder(expected.length, rowType.getFields().stream().map(RowType.Field::getType).toList());
+
+        try (IonReader ionReader = IonReaderBuilder.standard().build(ionText)) {
+            for (int i = 0; i < expected.length; i++) {
+                assertThat(ionReader.next()).isNotNull();
+                pageBuilder.declarePosition();
+                decoder.decode(ionReader, pageBuilder);
+            }
+            assertThat(ionReader.next()).isNull();
+        }
+
+        for (int i = 0; i < expected.length; i++) {
+            List<Object> actual = readTrinoValues(columns, pageBuilder.build(), i);
+            assertColumnValuesEquals(columns, actual, expected[i]);
+        }
+    }
+
+    private void assertValues(List<DecoderColumn> decoderColumns, String ionText, List<Object>... expected)
+            throws IOException
+    {
+        List<Column> columns = decoderColumns.stream()
+                .map(dc -> new Column("", dc.type(), dc.position()))
+                .toList();
+
+        IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
+        PageBuilder pageBuilder = new PageBuilder(expected.length, columns.stream().map(Column::type).toList());
 
         try (IonReader ionReader = IonReaderBuilder.standard().build(ionText)) {
             for (int i = 0; i < expected.length; i++) {
