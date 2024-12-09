@@ -45,6 +45,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 
@@ -117,7 +118,8 @@ public class IonPageSourceFactory
                 .map(HiveColumnHandle::getType)
                 .toList());
 
-        List<DecoderColumn> decoderColumns = getDecoderColumns(projectedReaderColumns);
+        Map<String, List<String>> pathExtractions = PathExtractionConfig.getIonPathToColumn(columns, schema.serdeProperties());
+        List<DecoderColumn> decoderColumns = getDecoderColumns(projectedReaderColumns, pathExtractions);
         IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
 
         TrinoFileSystem trinoFileSystem = trinoFileSystemFactory.create(session);
@@ -149,20 +151,25 @@ public class IonPageSourceFactory
         }
     }
 
-    private static List<DecoderColumn> getDecoderColumns(List<HiveColumnHandle> projectedReaderColumns)
+    private static List<DecoderColumn> getDecoderColumns(List<HiveColumnHandle> projectedReaderColumns, Map<String, List<String>> ionPaths)
     {
         List<DecoderColumn> decoderColumns = new LinkedList<>();
         for (int i = 0; i < projectedReaderColumns.size(); i++) {
             HiveColumnHandle columnHandle = projectedReaderColumns.get(i);
 
+            String columnName = columnHandle.getBaseColumnName();
+            List<String> ionPath = ionPaths.get(columnName);
+            checkArgument(ionPath != null, "Expected ion path for column: %s".formatted(columnName));
+
             List<String> steps = new LinkedList<>();
-            steps.add(columnHandle.getBaseColumnName());
+            steps.addAll(ionPath);
             steps.addAll(columnHandle.getHiveColumnProjectionInfo()
                     .map(HiveColumnProjectionInfo::getDereferenceNames)
                     .orElse(List.of()));
 
             decoderColumns.add(new DecoderColumn(steps, columnHandle.getType(), i));
         }
+
         return decoderColumns;
     }
 }

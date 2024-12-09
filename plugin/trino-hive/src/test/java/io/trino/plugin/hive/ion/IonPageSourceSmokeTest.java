@@ -125,12 +125,98 @@ public class IonPageSourceSmokeTest
         List<HiveColumnHandle> projectedColumns = List.of(
                 projectedColumn(tableColumns.get(0), "eggs"));
 
-        assertRowCount(
-                tableColumns,
-                projectedColumns,
+        assertRowValues(new TestFixture(tableColumns, projectedColumns),
                 // decoding either 'ham' or 'nested_to_prune' would result in an error
                 "{ spam: { nested_to_prune: splodysplode, eggs: 12 }, ham: exploding }",
-                1);
+                List.of(12));
+    }
+
+    @Test
+    public void testDereferenceTwoNestedSiblings()
+            throws IOException
+    {
+        final RowType spamType = RowType.rowType(field("cans", INTEGER), field("eggs", INTEGER));
+        List<HiveColumnHandle> tableColumns = List.of(
+                toHiveBaseColumnHandle("spam", spamType, 0),
+                toHiveBaseColumnHandle("ham", BOOLEAN, 1));
+        List<HiveColumnHandle> projectedColumns = List.of(
+                projectedColumn(tableColumns.get(0), "eggs"),
+                projectedColumn(tableColumns.get(0), "cans"));
+
+        assertRowValues(new TestFixture(tableColumns, projectedColumns),
+                "{ spam: { cans: 42, eggs: 12 }, ham: exploding }",
+                List.of(12, 42));
+    }
+
+    @Test
+    public void testBasicPathExtraction()
+            throws IOException
+    {
+        // equivalent to a projection of "spam.eggs" from the query
+        // and a path extraction of "meats.ham" from the serde
+        final RowType spamType = RowType.rowType(field("eggs", INTEGER));
+        List<HiveColumnHandle> tableColumns = List.of(
+                toHiveBaseColumnHandle("spam", spamType, 0),
+                toHiveBaseColumnHandle("ham", BOOLEAN, 1));
+        List<HiveColumnHandle> projections = List.of(
+                projectedColumn(tableColumns.get(0), "eggs"),
+                tableColumns.get(1));
+
+        TestFixture fixture = new TestFixture(tableColumns, projections)
+                .withPathExtractor("ham", "(meats ham)");
+
+        assertRowValues(
+                fixture,
+                "{ spam: { eggs: 12 }, meats: { ham: true } }",
+                List.of(12, true));
+    }
+
+    @Test
+    public void testPathExtractTopLevelValue()
+            throws IOException
+    {
+        List<HiveColumnHandle> tableColumns = List.of(
+                toHiveBaseColumnHandle("single_col", INTEGER, 0));
+
+        // the '()' path extractor extracts any top-level value, whether struct or not
+        TestFixture fixture = new TestFixture(tableColumns)
+                .withPathExtractor("single_col", "()");
+
+        assertRowValues(
+                fixture,
+                "17 31 53",
+                List.of(17), List.of(31), List.of(53));
+    }
+
+    @Test
+    public void testNoProjectedColumns()
+            throws IOException
+    {
+        List<HiveColumnHandle> tableColumns = List.of(
+                toHiveBaseColumnHandle("foo", VARCHAR, 0));
+
+        TestFixture fixture = new TestFixture(tableColumns, List.of());
+
+        assertRowCount(
+                fixture,
+                "46 { foo: baz } false",
+                3);
+    }
+
+    @Test
+    public void testNoProjectedColumnsWithTopLevelCapture()
+            throws IOException
+    {
+        List<HiveColumnHandle> tableColumns = List.of(
+                toHiveBaseColumnHandle("single_col", INTEGER, 0));
+
+        TestFixture fixture = new TestFixture(tableColumns, List.of())
+                .withPathExtractor("single_col", "()");
+
+        assertRowCount(
+                fixture,
+                "46 { foo: baz } false",
+                3);
     }
 
     @Test
@@ -196,14 +282,38 @@ public class IonPageSourceSmokeTest
             throws IOException
     {
         TestFixture fixture = new TestFixture(tableColumns, projectedColumns);
+        assertRowCount(fixture, ionText, rowCount);
+    }
+
+    private void assertRowCount(TestFixture fixture, String ionText, int rowCount)
+            throws IOException
+    {
         fixture.writeIonTextFile(ionText);
 
         try (ConnectorPageSource pageSource = fixture.getPageSource()) {
             final MaterializedResult result = MaterializedResult.materializeSourceDataStream(
                     fixture.getSession(),
                     pageSource,
-                    projectedColumns.stream().map(HiveColumnHandle::getType).toList());
+                    fixture.projections.stream().map(HiveColumnHandle::getType).toList());
             Assertions.assertEquals(rowCount, result.getRowCount());
+            result.getMaterializedRows().forEach(System.err::println);
+        }
+    }
+
+    void assertRowValues(TestFixture fixture, String ionText, List<Object>... values)
+            throws IOException
+    {
+        fixture.writeIonTextFile(ionText);
+
+        try (ConnectorPageSource pageSource = fixture.getPageSource()) {
+            final MaterializedResult result = MaterializedResult.materializeSourceDataStream(
+                    fixture.getSession(),
+                    pageSource,
+                    fixture.projections.stream().map(HiveColumnHandle::getType).toList());
+            Assertions.assertEquals(values.length, result.getRowCount());
+            for (int i = 0; i < values.length; i++) {
+                Assertions.assertEquals(values[i], result.getMaterializedRows().get(i).getFields());
+            }
         }
     }
 
@@ -254,6 +364,12 @@ public class IonPageSourceSmokeTest
         TestFixture withNativeIonDisabled()
         {
             hiveConfig.setIonNativeTrinoEnabled(false);
+            return this;
+        }
+
+        TestFixture withPathExtractor(String column, String pathExtraction)
+        {
+            tableProperties.put("ion.%s.path_extractor".formatted(column), pathExtraction);
             return this;
         }
 

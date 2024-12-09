@@ -65,9 +65,18 @@ public class IonDecoderFactory
      * the stream is exhausted.
      * <br>
      * It also expects that the calling code will manage the PageBuilder.
+     * <br>
+     * If there are no columns to decode (e.g. for a `count(*)`), then this returns
+     * a no-op decoder. There is no type-checking for this case: any Ion value of
+     * Ion type, including null, is just ignored. This is the behavior for the legacy
+     * ion hive serde.
      */
     public static IonDecoder buildDecoder(List<DecoderColumn> columns)
     {
+        if (columns.isEmpty()) {
+            return (_, _) -> {};
+        }
+
         DecoderInstructions instructions = DecoderInstructions.forColumns(columns);
         IndirectDecoder decoder = decoderForInstructions(instructions);
         return (ionReader, pageBuilder) -> {
@@ -83,9 +92,10 @@ public class IonDecoderFactory
                         .collect(Collectors.toMap(Map.Entry::getKey, e -> decoderForInstructions(e.getValue())));
                 yield new RowDecoder(decoders);
             }
-            case DecoderInstructions.DecodeValue decodeColumn -> indirectDecoderFor(decoderForType(decodeColumn.type()), decodeColumn.blockPosition());
-            // todo: this likely won't work when someone is extracting a non-struct as the single column... grrrrr...
-            case DecoderInstructions.Empty _ -> new RowDecoder(Map.of());
+            case DecoderInstructions.DecodeValue decodeColumn -> indirectDecoderFor(
+                    decoderForType(decodeColumn.type()),
+                    decodeColumn.blockPosition());
+            case DecoderInstructions.Empty _ -> throw new IllegalArgumentException("Cannot build Decoder for Empty Instructions!");
         };
     }
 
