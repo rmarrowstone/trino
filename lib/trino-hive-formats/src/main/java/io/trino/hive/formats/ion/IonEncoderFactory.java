@@ -144,7 +144,10 @@ public class IonEncoderFactory
         {
             writer.stepIn(IonType.STRUCT);
             for (int i = 0; i < fieldEncoders.size(); i++) {
-                // todo: the Hive SerDe omits fields when null by default
+                // Omit the filed when the field is null
+                if (blockSelector.apply(i).isNull(position)) {
+                    continue;
+                }
                 writer.setFieldName(fieldNames.get(i));
                 fieldEncoders.get(i)
                         .encode(writer, blockSelector.apply(i), position);
