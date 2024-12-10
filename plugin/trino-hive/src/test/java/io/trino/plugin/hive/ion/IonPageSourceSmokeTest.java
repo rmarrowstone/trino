@@ -172,6 +172,24 @@ public class IonPageSourceSmokeTest
     }
 
     @Test
+    public void testPathExtractionWithIndexedListItems()
+            throws IOException
+    {
+        List<HiveColumnHandle> tableColumns = List.of(
+                toHiveBaseColumnHandle("cell", VARCHAR, 0),
+                toHiveBaseColumnHandle("home", VARCHAR, 1));
+
+        TestFixture fixture = new TestFixture(tableColumns)
+                .withPathExtractor("cell", "(phone 0)")
+                .withPathExtractor("home", "(phone 2)");
+
+        assertRowValues(
+                fixture,
+                "{ phone: ['999-555-1212', '999-999-9999', '999-555-3434'] }",
+                List.of("999-555-1212", "999-555-3434"));
+    }
+
+    @Test
     public void testPathExtractTopLevelValue()
             throws IOException
     {
@@ -296,7 +314,6 @@ public class IonPageSourceSmokeTest
                     pageSource,
                     fixture.projections.stream().map(HiveColumnHandle::getType).toList());
             Assertions.assertEquals(rowCount, result.getRowCount());
-            result.getMaterializedRows().forEach(System.err::println);
         }
     }
 

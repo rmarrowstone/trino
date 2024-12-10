@@ -45,11 +45,25 @@ public sealed interface DecoderInstructions
         }
     }
 
+    record IndexedItems(Map<Integer, DecoderInstructions> items)
+            implements DecoderInstructions
+    {
+        IndexedItems fold(Integer ordinal, DecoderColumn tail)
+        {
+            DecoderInstructions existing = items.getOrDefault(ordinal, EMPTY);
+            HashMap<Integer, DecoderInstructions> merged = new HashMap<>(items);
+            merged.put(ordinal, existing.fold(tail));
+
+            return new IndexedItems(Collections.unmodifiableMap(merged));
+        }
+    }
+
     record Empty()
             implements DecoderInstructions {}
 
     Empty EMPTY = new Empty();
     StructFields EMPTY_STRUCT = new StructFields(Map.of());
+    IndexedItems EMPTY_LIST = new IndexedItems(Map.of());
 
     static DecoderInstructions forColumns(List<DecoderColumn> columns)
     {
@@ -68,18 +82,24 @@ public sealed interface DecoderInstructions
     default DecoderInstructions fold(
             DecoderColumn column)
     {
-        Optional<String> head = column.head();
+        Optional<DecoderPathStep> head = column.head();
         if (head.isEmpty()) {
             checkArgument(this instanceof Empty, "Cannot cover steps or other column with decoded column!");
             return new DecodeValue(column.type(), column.position());
         }
 
-        String step = head.get();
+        DecoderPathStep step = head.get();
         DecoderColumn tail = column.tail();
         return switch (this) {
-            case Empty _ -> EMPTY_STRUCT.fold(step, tail);
-            case StructFields struct -> struct.fold(step, tail);
-            case DecodeValue _ -> throw new IllegalArgumentException("Cannot merge steps into covering decoded column!");
+            case Empty _ -> {
+                yield switch (step) {
+                        case DecoderPathStep.FieldName field -> EMPTY_STRUCT.fold(field.name(), tail);
+                        case DecoderPathStep.ListIndex index -> EMPTY_LIST.fold(index.ordinal(), tail);
+                    };
+            }
+            case StructFields struct when (step instanceof DecoderPathStep.FieldName field) -> struct.fold(field.name(), tail);
+            case IndexedItems items when (step instanceof DecoderPathStep.ListIndex index) -> items.fold(index.ordinal(), tail);
+            default -> throw new IllegalArgumentException("Canonot merge step: %s into instructions: %s".formatted(step, this));
         };
     }
 }

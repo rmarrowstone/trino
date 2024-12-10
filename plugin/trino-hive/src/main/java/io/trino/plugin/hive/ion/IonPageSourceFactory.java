@@ -24,11 +24,11 @@ import io.trino.filesystem.TrinoInputFile;
 import io.trino.hive.formats.compression.Codec;
 import io.trino.hive.formats.compression.CompressionKind;
 import io.trino.hive.formats.ion.DecoderColumn;
+import io.trino.hive.formats.ion.DecoderPathStep;
 import io.trino.hive.formats.ion.IonDecoder;
 import io.trino.hive.formats.ion.IonDecoderFactory;
 import io.trino.plugin.hive.AcidInfo;
 import io.trino.plugin.hive.HiveColumnHandle;
-import io.trino.plugin.hive.HiveColumnProjectionInfo;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
 import io.trino.plugin.hive.ReaderColumns;
@@ -118,7 +118,7 @@ public class IonPageSourceFactory
                 .map(HiveColumnHandle::getType)
                 .toList());
 
-        Map<String, List<String>> pathExtractions = PathExtractionConfig.getIonPathToColumn(columns, schema.serdeProperties());
+        Map<String, List<DecoderPathStep>> pathExtractions = PathExtractionConfig.getIonPathToColumn(columns, schema.serdeProperties());
         List<DecoderColumn> decoderColumns = getDecoderColumns(projectedReaderColumns, pathExtractions);
         IonDecoder decoder = IonDecoderFactory.buildDecoder(decoderColumns);
 
@@ -151,20 +151,23 @@ public class IonPageSourceFactory
         }
     }
 
-    private static List<DecoderColumn> getDecoderColumns(List<HiveColumnHandle> projectedReaderColumns, Map<String, List<String>> ionPaths)
+    private static List<DecoderColumn> getDecoderColumns(List<HiveColumnHandle> projectedReaderColumns, Map<String, List<DecoderPathStep>> ionPaths)
     {
         List<DecoderColumn> decoderColumns = new LinkedList<>();
         for (int i = 0; i < projectedReaderColumns.size(); i++) {
             HiveColumnHandle columnHandle = projectedReaderColumns.get(i);
 
             String columnName = columnHandle.getBaseColumnName();
-            List<String> ionPath = ionPaths.get(columnName);
+            List<DecoderPathStep> ionPath = ionPaths.get(columnName);
             checkArgument(ionPath != null, "Expected ion path for column: %s".formatted(columnName));
 
-            List<String> steps = new LinkedList<>();
+            List<DecoderPathStep> steps = new LinkedList<>();
             steps.addAll(ionPath);
             steps.addAll(columnHandle.getHiveColumnProjectionInfo()
-                    .map(HiveColumnProjectionInfo::getDereferenceNames)
+                    .map(projectionInfo ->
+                        projectionInfo.getDereferenceNames().stream()
+                                .map(DecoderPathStep.FieldName::new)
+                                .toList())
                     .orElse(List.of()));
 
             decoderColumns.add(new DecoderColumn(steps, columnHandle.getType(), i));

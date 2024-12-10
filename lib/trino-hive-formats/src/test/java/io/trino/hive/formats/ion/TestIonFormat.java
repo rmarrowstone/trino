@@ -211,7 +211,7 @@ public class TestIonFormat
     public void testDereferencedFieldInNestedRow()
             throws IOException
     {
-        DecoderColumn column = new DecoderColumn(
+        DecoderColumn column = DecoderColumn.forFieldNamePath(
                 List.of("name", "first"),
                 VARCHAR,
                 0);
@@ -244,11 +244,11 @@ public class TestIonFormat
             throws IOException
     {
         List<DecoderColumn> columns = List.of(
-                new DecoderColumn(
+                DecoderColumn.forFieldNamePath(
                         List.of("name", "first"),
                         VARCHAR,
                         0),
-                new DecoderColumn(
+                DecoderColumn.forFieldNamePath(
                         List.of("name", "last"),
                         VARCHAR,
                         1));
@@ -354,7 +354,7 @@ public class TestIonFormat
         for (int i = 0; i < fields.size(); i++) {
             RowType.Field field = fields.get(i);
             Type type = field.getType();
-            decoderColumns.add(new DecoderColumn(List.of(field.getName().get()), type, i));
+            decoderColumns.add(DecoderColumn.forFieldNamePath(List.of(field.getName().get()), type, i));
             columns.add(new Column(field.getName().get(), type, i));
         }
 

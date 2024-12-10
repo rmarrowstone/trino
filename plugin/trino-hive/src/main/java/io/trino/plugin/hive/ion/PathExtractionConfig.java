@@ -18,6 +18,7 @@ import com.amazon.ion.IonType;
 import com.amazon.ion.system.IonReaderBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.hive.formats.ion.DecoderPathStep;
 import io.trino.plugin.hive.HiveColumnHandle;
 
 import java.io.IOException;
@@ -36,18 +37,18 @@ class PathExtractionConfig
      * Finds an Ion Path Extractor if one is defined in the table's serde properties.
      * If not found, a list containing the columnName is returned.
      */
-    static Map<String, List<String>> getIonPathToColumn(List<HiveColumnHandle> columns, Map<String, String> tableProperties)
+    static Map<String, List<DecoderPathStep>> getIonPathToColumn(List<HiveColumnHandle> columns, Map<String, String> tableProperties)
     {
-        ImmutableMap.Builder<String, List<String>> extractionsBuilder = ImmutableMap.builder();
+        ImmutableMap.Builder<String, List<DecoderPathStep>> extractionsBuilder = ImmutableMap.builder();
 
         for (HiveColumnHandle columnHandle : columns) {
             String columnName = columnHandle.getBaseColumnName();
             String extractorDef = tableProperties.get("ion.%s.path_extractor".formatted(columnName));
             if (extractorDef == null) {
-                extractionsBuilder.put(columnName, List.of(columnName));
+                extractionsBuilder.put(columnName, List.of(new DecoderPathStep.FieldName(columnName)));
             }
             else {
-                List<String> path = parsePath(extractorDef);
+                List<DecoderPathStep> path = parsePath(extractorDef);
                 extractionsBuilder.put(columnName, path);
             }
         }
@@ -60,9 +61,8 @@ class PathExtractionConfig
     /**
      * This copies the relatively simple logic of parsing paths from the path extractor
      * configs from the ion-java-path-extraction.
-     * Using that was.... todo: fill in
      */
-    private static List<String> parsePath(String path)
+    private static List<DecoderPathStep> parsePath(String path)
     {
         try (IonReader reader = readerBuilder.build(path)) {
             IonType containerType = reader.next();
@@ -73,7 +73,7 @@ class PathExtractionConfig
             validateNoAnnotations(reader);
 
             reader.stepIn();
-            ImmutableList.Builder<String> builder = ImmutableList.builder();
+            ImmutableList.Builder<DecoderPathStep> builder = ImmutableList.builder();
             while (reader.next() != null) {
                 validateNoAnnotations(reader);
                 builder.add(parseStep(reader));
@@ -94,16 +94,16 @@ class PathExtractionConfig
         }
     }
 
-    private static String parseStep(IonReader reader)
+    private static DecoderPathStep parseStep(IonReader reader)
     {
         return switch (reader.getType()) {
-            case IonType.INT -> throw new UnsupportedPathException("Sequence index extractions are not supported!");
+            case IonType.INT -> new DecoderPathStep.ListIndex(reader.intValue());
             case IonType.STRING, IonType.SYMBOL -> {
                 String text = reader.stringValue();
                 if (text.equals("*")) {
                     throw new UnsupportedPathException("Wildcard matching is not supported!");
                 }
-                yield text;
+                yield new DecoderPathStep.FieldName(text);
             }
             default -> throw new IllegalArgumentException("Path step must be IonText (field name)");
         };

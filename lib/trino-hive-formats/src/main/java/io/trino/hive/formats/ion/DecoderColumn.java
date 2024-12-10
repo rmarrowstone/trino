@@ -18,9 +18,14 @@ import io.trino.spi.type.Type;
 import java.util.List;
 import java.util.Optional;
 
-public record DecoderColumn(List<String> path, Type type, int position)
+public record DecoderColumn(List<DecoderPathStep> path, Type type, int position)
 {
-    Optional<String> head()
+    static DecoderColumn forFieldNamePath(List<String> path, Type type, int position)
+    {
+        return new DecoderColumn(path.stream().map(text -> (DecoderPathStep) new DecoderPathStep.FieldName(text)).toList(), type, position);
+    }
+
+    Optional<DecoderPathStep> head()
     {
         if (path.isEmpty()) {
             return Optional.empty();

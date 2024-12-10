@@ -95,6 +95,11 @@ public class IonDecoderFactory
             case DecoderInstructions.DecodeValue decodeColumn -> indirectDecoderFor(
                     decoderForType(decodeColumn.type()),
                     decodeColumn.blockPosition());
+            case DecoderInstructions.IndexedItems indexedItems -> {
+                Map<Integer, IndirectDecoder> decoders = indexedItems.items().entrySet().stream()
+                        .collect(Collectors.toMap(Map.Entry::getKey, e -> decoderForInstructions(e.getValue())));
+                yield new IndexedItemDecoder(decoders);
+            }
             case DecoderInstructions.Empty _ -> throw new IllegalArgumentException("Cannot build Decoder for Empty Instructions!");
         };
     }
@@ -153,6 +158,62 @@ public class IonDecoderFactory
                 builderSelector.apply(position).appendNull();
             }
         };
+    }
+
+    private static class IndexedItemDecoder
+            implements IndirectDecoder
+    {
+        private List<IndirectDecoder> itemDecoders;
+
+        public IndexedItemDecoder(Map<Integer, IndirectDecoder> items)
+        {
+            int maxIndex = items.keySet().stream().reduce(-1, Math::max);
+            IndirectDecoder[] decoders = new IndirectDecoder[maxIndex + 1];
+
+            for (Map.Entry<Integer, IndirectDecoder> item : items.entrySet()) {
+                decoders[item.getKey()] = item.getValue();
+            }
+            this.itemDecoders = Arrays.asList(decoders);
+        }
+
+        @Override
+        public void decode(IonReader ionReader, IntFunction<BlockBuilder> builderSelector)
+        {
+            if (ionReader.isNullValue()) {
+                absent(builderSelector);
+            }
+            else {
+                if (ionReader.getType() != IonType.LIST && ionReader.getType() != IonType.SEXP) {
+                    throw new IonException("Expected sequence type for indexed item! Encountered: " + ionReader.getType());
+                }
+                int position = 0;
+                ionReader.stepIn();
+                while (ionReader.next() != null && position < itemDecoders.size()) {
+                    IndirectDecoder itemDecoder = itemDecoders.get(position);
+                    if (itemDecoder != null) {
+                        itemDecoder.decode(ionReader, builderSelector);
+                    }
+                    position++;
+                }
+                ionReader.stepOut();
+            }
+        }
+
+        @Override
+        public void absent(IntFunction<BlockBuilder> builderSelector)
+        {
+            for (IndirectDecoder decoder : itemDecoders) {
+                decoder.absent(builderSelector);
+            }
+        }
+
+        @Override
+        public void reset(IntFunction<BlockBuilder> builderSelector)
+        {
+            for (IndirectDecoder decoder : itemDecoders) {
+                decoder.reset(builderSelector);
+            }
+        }
     }
 
     /**
