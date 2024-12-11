@@ -16,6 +16,7 @@ package io.trino.hive.formats.ion;
 import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
 import com.amazon.ion.IonType;
+import com.amazon.ion.Timestamp;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
@@ -49,7 +50,7 @@ import io.trino.spi.type.VarcharType;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
-import java.time.ZoneId;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -312,8 +313,15 @@ public class IonDecoderFactory
     private static final BlockDecoder boolDecoder = (ionReader, blockBuilder) ->
             BooleanType.BOOLEAN.writeBoolean(blockBuilder, ionReader.booleanValue());
 
-    private static final BlockDecoder dateDecoder = (ionReader, blockBuilder) ->
-            DateType.DATE.writeLong(blockBuilder, ionReader.timestampValue().dateValue().toInstant().atZone(ZoneId.of("UTC")).toLocalDate().toEpochDay());
+    private static final BlockDecoder dateDecoder = (ionReader, blockBuilder) -> {
+        Timestamp ionTs = ionReader.timestampValue();
+        if (ionTs.getZHour() != 0 || ionTs.getZMinute() != 0 || ionTs.getZDecimalSecond().signum() != 0) {
+            throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                    "Timestamp value %s is too precise to fit in Date type!".formatted(ionTs));
+        }
+        LocalDate localDate = LocalDate.of(ionTs.getZYear(), ionTs.getZMonth(), ionTs.getZDay());
+        DateType.DATE.writeLong(blockBuilder, localDate.toEpochDay());
+    };
 
     private static final BlockDecoder binaryDecoder = (ionReader, blockBuilder) ->
             VarbinaryType.VARBINARY.writeSlice(blockBuilder, Slices.wrappedBuffer(ionReader.newBytes()));

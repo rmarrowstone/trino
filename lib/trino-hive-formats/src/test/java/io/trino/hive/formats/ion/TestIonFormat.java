@@ -25,8 +25,10 @@ import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BooleanType;
+import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.RowType;
+import io.trino.spi.type.SqlDate;
 import io.trino.spi.type.SqlDecimal;
 import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
@@ -37,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.math.BigInteger;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -172,6 +175,30 @@ public class TestIonFormat
                 // top-level struct (row), list of elements (array), then inner struct (row)
                 List.of(
                         List.of(List.of(13), List.of(17))));
+    }
+
+    @Test
+    public void testDateDecoding()
+            throws IOException
+    {
+        RowType rowType = RowType.rowType(field("my_date", DateType.DATE));
+        SqlDate expected = new SqlDate((int) LocalDate.of(2022, 2, 22).toEpochDay());
+        assertValues(rowType,
+                "{ my_date: 2022-02-22T } { my_date: 2022-02-21T12:00-12:00 } ",
+                List.of(expected), List.of(expected));
+
+        List<String> overPreciseIons = List.of(
+                "{ my_date: 2022-02-22T22:22:22Z }",
+                "{ my_date: 2022-02-22T00:00+01:00 }",
+                "{ my_date: 2022-02-22T00:01Z }",
+                "{ my_date: 2022-02-22T00:00:01Z }",
+                "{ my_date: 2022-02-22T00:00:00.001Z}");
+
+        for (String ion : overPreciseIons) {
+            Assertions.assertThrows(TrinoException.class, () -> {
+                assertValues(rowType, ion, List.of());
+            });
+        }
     }
 
     @Test
