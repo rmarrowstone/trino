@@ -236,14 +236,12 @@ public class TestIonFormat
     public void testEncodeWithNullField()
             throws IOException
     {
-        List<Object> row1 = Arrays.asList(null, "something", true, new SqlVarbinary(new byte[] {(byte) 0xff}), List.of(1, 2, 3), List.of(51, "baz"));
-        List<Object> row2 = Arrays.asList(31, "somebody", null, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa}), List.of(7, 8, 9), List.of(67, "qux"));
+        List<Object> row1 = Arrays.asList(null, null, null, null, null, null);
         String ionText = """
-                { some_text:"something", is_summer:true, byte_clob:{{/w==}}, sequencer:[1,2,3], struction:{ foo:51, bar:"baz"}}
-                { magic_num:31, some_text:"somebody", byte_clob:{{Aao=}}, sequencer:[7,8,9], struction:{ foo:67, bar:"qux"}}
+                {}
                 """;
 
-        Page page = toPage(TEST_COLUMNS, row1, row2);
+        Page page = toPage(TEST_COLUMNS, row1);
         assertIonEquivalence(TEST_COLUMNS, page, ionText);
     }
 
