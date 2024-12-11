@@ -14,16 +14,15 @@
 package io.trino.hive.formats.ion;
 
 import com.amazon.ion.IonDatagram;
-import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
 import com.amazon.ion.IonSystem;
 import com.amazon.ion.IonWriter;
-import com.amazon.ion.Timestamp;
 import com.amazon.ion.system.IonReaderBuilder;
 import com.amazon.ion.system.IonSystemBuilder;
 import io.trino.hive.formats.line.Column;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
+import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.DecimalType;
@@ -37,8 +36,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -47,6 +46,7 @@ import java.util.stream.IntStream;
 import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
 import static io.trino.hive.formats.FormatTestUtils.readTrinoValues;
 import static io.trino.hive.formats.FormatTestUtils.toPage;
+import static io.trino.hive.formats.FormatTestUtils.toSqlTimestamp;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -175,22 +175,38 @@ public class TestIonFormat
     }
 
     @Test
-    public void testPicoPreciseTimestamp()
+    public void testTimestampDecoding()
             throws IOException
     {
-        Timestamp ionTimestamp = Timestamp.forSecond(2067, 8, 9, 11, 22, new BigDecimal("33.445566"), 0);
-        long epochMicros = ionTimestamp.getDecimalMillis().movePointRight(3).longValue();
-        assertValues(
-                RowType.rowType(field("my_ts", TimestampType.TIMESTAMP_PICOS)),
-                "{ my_ts: 2067-08-09T11:22:33.445566778899Z }",
-                List.of(SqlTimestamp.newInstance(12, epochMicros, 778899)));
-    }
+        List<String> ions = List.of(
+                "{ my_ts: 2067-08-09T11:22:33Z }",
+                "{ my_ts: 2067-08-09T11:22:33.444Z }",
+                "{ my_ts: 2067-08-09T11:22:33.444555Z }",
+                "{ my_ts: 2067-08-09T11:22:33.444555666Z }",
+                "{ my_ts: 2067-08-09T11:22:33.444555666777Z }",
+                "{ my_ts: 2067-08-09T11:22:33.444555666777888Z }");
 
-    @Test
-    public void testOverPreciseTimestamps()
-            throws IonException
-    {
-        // todo: implement
+        LocalDateTime dateTimeToSeconds = LocalDateTime.of(2067, 8, 9, 11, 22, 33);
+        List<SqlTimestamp> sqlTimestamps = List.of(
+                toSqlTimestamp(TimestampType.TIMESTAMP_SECONDS, dateTimeToSeconds),
+                toSqlTimestamp(TimestampType.TIMESTAMP_MILLIS, dateTimeToSeconds.plusNanos(444000000)),
+                toSqlTimestamp(TimestampType.TIMESTAMP_MICROS, dateTimeToSeconds.plusNanos(444555000)),
+                toSqlTimestamp(TimestampType.TIMESTAMP_NANOS, dateTimeToSeconds.plusNanos(444555666)),
+                toSqlTimestamp(TimestampType.TIMESTAMP_PICOS, dateTimeToSeconds.plusNanos(444555666), 777));
+
+        for (int i = 0; i < sqlTimestamps.size(); i++) {
+            SqlTimestamp sqlTimestamp = sqlTimestamps.get(i);
+            RowType rowType = RowType.rowType(field("my_ts", TimestampType.createTimestampType(sqlTimestamp.getPrecision())));
+
+            String samePreciseIon = ions.get(i);
+            String overPreciseIon = ions.get(i + 1);
+
+            assertValues(rowType, samePreciseIon, List.of(sqlTimestamp));
+
+            Assertions.assertThrows(TrinoException.class, () -> {
+                assertValues(rowType, overPreciseIon, List.of());
+            });
+        }
     }
 
     @Test
@@ -227,9 +243,8 @@ public class TestIonFormat
                 "{ amount: 1234d2 }");
 
         for (String ionText : ions) {
-            Assertions.assertThrows(
-                    NumberFormatException.class,
-                    () -> assertValues(rowType, ionText, List.of()));
+            Assertions.assertThrows(TrinoException.class, () ->
+                    assertValues(rowType, ionText, List.of()));
         }
     }
 
@@ -247,9 +262,8 @@ public class TestIonFormat
                 "{ amount: 1234d22 }");
 
         for (String ionText : ions) {
-            Assertions.assertThrows(
-                    NumberFormatException.class,
-                    () -> assertValues(rowType, ionText, List.of()));
+            Assertions.assertThrows(TrinoException.class, () ->
+                    assertValues(rowType, ionText, List.of()));
         }
     }
 

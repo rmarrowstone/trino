@@ -21,6 +21,8 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.trino.hive.formats.line.Column;
 import io.trino.spi.PageBuilder;
+import io.trino.spi.StandardErrorCode;
+import io.trino.spi.TrinoException;
 import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RowBlockBuilder;
@@ -227,25 +229,27 @@ public class IonDecoderFactory
 
     private static BlockDecoder timestampDecoder(TimestampType type)
     {
-        // todo: no attempt is made at handling offsets or lack thereof
-        if (type.isShort()) {
-            return (reader, builder) -> {
-                long micros = reader.timestampValue().getDecimalMillis()
-                        .setScale(type.getPrecision() - 3, RoundingMode.HALF_EVEN)
-                        .movePointRight(3)
-                        .longValue();
-                type.writeLong(builder, micros);
-            };
-        }
-        else {
-            return (reader, builder) -> {
+        return (reader, builder) -> {
+            try {
                 BigDecimal decimalMicros = reader.timestampValue().getDecimalMillis()
+                        .setScale(type.getPrecision() - 3, RoundingMode.UNNECESSARY)
                         .movePointRight(3);
-                BigDecimal subMicrosFrac = decimalMicros.remainder(BigDecimal.ONE)
-                        .movePointRight(6);
-                type.writeObject(builder, new LongTimestamp(decimalMicros.longValue(), subMicrosFrac.intValue()));
-            };
-        }
+
+                if (type.isShort()) {
+                    type.writeLong(builder, decimalMicros.longValue());
+                }
+                else {
+                    BigDecimal subMicrosFrac = decimalMicros.remainder(BigDecimal.ONE)
+                            .movePointRight(6);
+                    type.writeObject(builder, new LongTimestamp(decimalMicros.longValue(), subMicrosFrac.intValue()));
+                }
+            }
+            catch (ArithmeticException e) {
+                throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                        "Timestamp value %s is too precise for %d digits of fractional seconds!"
+                                .formatted(reader.timestampValue(), type.getPrecision()));
+            }
+        };
     }
 
     private static BlockDecoder decimalDecoder(DecimalType type)
@@ -257,7 +261,7 @@ public class IonDecoderFactory
                         .unscaledValue();
 
                 if (Decimals.overflows(unscaled, type.getPrecision())) {
-                    throw new NumberFormatException(
+                    throw new TrinoException(StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE,
                             "Decimal value %s does not fit %d digits of precision and %d of scale!"
                                     .formatted(reader.bigDecimalValue(), type.getPrecision(), type.getScale()));
                 }
@@ -269,7 +273,7 @@ public class IonDecoderFactory
                 }
             }
             catch (ArithmeticException e) {
-                throw new NumberFormatException(
+                throw new TrinoException(StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE,
                         "Decimal value %s does not fit %d digits of scale!"
                                 .formatted(reader.bigDecimalValue(), type.getScale()));
             }
