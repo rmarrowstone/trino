@@ -30,6 +30,7 @@ import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.Decimals;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.IntegerType;
@@ -44,6 +45,7 @@ import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.ZoneId;
 import java.util.Arrays;
@@ -93,7 +95,7 @@ public class IonDecoderFactory
             case BooleanType _ -> wrapDecoder(boolDecoder, IonType.BOOL);
             case DateType _ -> wrapDecoder(dateDecoder, IonType.TIMESTAMP);
             case TimestampType t -> wrapDecoder(timestampDecoder(t), IonType.TIMESTAMP);
-            case DecimalType t -> wrapDecoder(decimalDecoder(t), IonType.DECIMAL);
+            case DecimalType t -> wrapDecoder(decimalDecoder(t), IonType.DECIMAL, IonType.INT);
             case VarcharType _, CharType _ -> wrapDecoder(stringDecoder, IonType.STRING, IonType.SYMBOL);
             case VarbinaryType _ -> wrapDecoder(binaryDecoder, IonType.BLOB, IonType.CLOB);
             case RowType r -> wrapDecoder(RowDecoder.forFields(r.getFields()), IonType.STRUCT);
@@ -248,23 +250,30 @@ public class IonDecoderFactory
 
     private static BlockDecoder decimalDecoder(DecimalType type)
     {
-        if (type.isShort()) {
-            return (reader, builder) -> {
-                long unscaled = reader.bigDecimalValue()
+        return (reader, builder) -> {
+            try {
+                BigInteger unscaled = reader.bigDecimalValue()
                         .setScale(type.getScale(), RoundingMode.UNNECESSARY)
-                        .unscaledValue()
-                        .longValue();
-                type.writeLong(builder, unscaled);
-            };
-        }
-        else {
-            return (reader, builder) -> {
-                Int128 unscaled = Int128.valueOf(reader.bigDecimalValue()
-                        .setScale(type.getScale(), RoundingMode.UNNECESSARY)
-                        .unscaledValue());
-                type.writeObject(builder, unscaled);
-            };
-        }
+                        .unscaledValue();
+
+                if (Decimals.overflows(unscaled, type.getPrecision())) {
+                    throw new NumberFormatException(
+                            "Decimal value %s does not fit %d digits of precision and %d of scale!"
+                                    .formatted(reader.bigDecimalValue(), type.getPrecision(), type.getScale()));
+                }
+                if (type.isShort()) {
+                    type.writeLong(builder, unscaled.longValue());
+                }
+                else {
+                    type.writeObject(builder, Int128.valueOf(unscaled));
+                }
+            }
+            catch (ArithmeticException e) {
+                throw new NumberFormatException(
+                        "Decimal value %s does not fit %d digits of scale!"
+                                .formatted(reader.bigDecimalValue(), type.getScale()));
+            }
+        };
     }
 
     private static final BlockDecoder byteDecoder = (ionReader, blockBuilder) ->

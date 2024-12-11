@@ -204,17 +204,53 @@ public class TestIonFormat
                 "{ amount: 1234.00, big_amount: 1234.00000 }"
                         + "{ amount: 1234d0, big_amount: 1234d0 }"
                         + "{ amount: 12d2, big_amount: 12d2 }"
-                        + "{ amount: 1234.000, big_amount: 1234.000000 }",
+                        + "{ amount: 1234.000, big_amount: 1234.000000 }"
+                        + "{ amount: 1234, big_amount: 1234 }", // these are both IonInts
                 List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)),
                 List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)),
                 List.of(new SqlDecimal(BigInteger.valueOf(120000), 10, 2), new SqlDecimal(BigInteger.valueOf(120000000), 25, 5)),
+                List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)),
                 List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)));
     }
 
     @Test
-    public void testOversizeOrOverpreciseDecimals()
+    public void testNumbersTooBigForShortDecimal()
     {
-        // todo: implement
+        RowType rowType = RowType.rowType(
+                field("amount", DecimalType.createDecimalType(4, 2)));
+
+        List<String> ions = List.of(
+                "{ amount: 123.4 }",
+                "{ amount: 1.234 }",
+                "{ amount: 123 }",
+                "{ amount: 1234d-10 }",
+                "{ amount: 1234d2 }");
+
+        for (String ionText : ions) {
+            Assertions.assertThrows(
+                    NumberFormatException.class,
+                    () -> assertValues(rowType, ionText, List.of()));
+        }
+    }
+
+    @Test
+    public void testNumbersTooBigForDecimal128()
+    {
+        RowType rowType = RowType.rowType(
+                field("amount", DecimalType.createDecimalType(20, 2)));
+
+        List<String> ions = List.of(
+                "{ amount: 12345678901234567890.4 }",
+                "{ amount: 1.234 }",
+                "{ amount: 12345678901234567890 }",
+                "{ amount: 1234d-10 }",
+                "{ amount: 1234d22 }");
+
+        for (String ionText : ions) {
+            Assertions.assertThrows(
+                    NumberFormatException.class,
+                    () -> assertValues(rowType, ionText, List.of()));
+        }
     }
 
     @Test
