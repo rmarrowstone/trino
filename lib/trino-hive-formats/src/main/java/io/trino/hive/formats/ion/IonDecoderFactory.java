@@ -13,7 +13,6 @@
  */
 package io.trino.hive.formats.ion;
 
-import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
 import com.amazon.ion.IonType;
 import com.amazon.ion.Timestamp;
@@ -60,7 +59,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 public class IonDecoderFactory
 {
@@ -125,7 +123,8 @@ public class IonDecoderFactory
             final IonType type = reader.getType();
             if (!allowedWithNull.contains(type)) {
                 final String expected = allowedWithNull.stream().map(IonType::name).collect(Collectors.joining(", "));
-                throw new IonException(String.format("Encountered value with IonType: %s, required one of %s ", type, expected));
+                throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                        "Encountered value with IonType: %s, expected one of %s ".formatted(type, expected));
             }
             if (reader.isNullValue()) {
                 builder.appendNull();
@@ -147,29 +146,30 @@ public class IonDecoderFactory
         {
             ImmutableList.Builder<BlockDecoder> decoderBuilder = ImmutableList.builder();
             ImmutableMap.Builder<String, Integer> fieldPositionBuilder = ImmutableMap.builder();
-            IntStream.range(0, fields.size())
-                    .forEach(position -> {
-                        RowType.Field field = fields.get(position);
-                        decoderBuilder.add(decoderForType(field.getType()));
-                        fieldPositionBuilder.put(field.getName().get().toLowerCase(Locale.ROOT), position);
-                    });
-
+            for (int pos = 0; pos < fields.size(); pos++) {
+                RowType.Field field = fields.get(pos);
+                decoderBuilder.add(decoderForType(field.getType()));
+                fieldPositionBuilder.put(field.getName().get().toLowerCase(Locale.ROOT), pos);
+            }
             return new RowDecoder(fieldPositionBuilder.buildOrThrow(), decoderBuilder.build());
         }
 
         @Override
         public void decode(IonReader ionReader, PageBuilder pageBuilder)
         {
-            // todo: we could also map an Ion List to a Struct
-            if (ionReader.getType() != IonType.STRUCT) {
-                throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
+            IonType ionType = ionReader.getType();
+            if (ionType != IonType.STRUCT && ionType != IonType.NULL) {
+                throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                        "Top-level IonType may be Struct or Null! Encountered: " + ionReader.getType());
             }
             if (ionReader.isNullValue()) {
-                // todo: is this an error or just a null value?
-                //       i think in the hive serde it's a null record.
-                throw new IonException("Top Level Values must not be null!");
+                for (int i = 0; i < fieldDecoders.size(); i++) {
+                    pageBuilder.getBlockBuilder(i).appendNull();
+                }
             }
-            decode(ionReader, pageBuilder::getBlockBuilder);
+            else {
+                decode(ionReader, pageBuilder::getBlockBuilder);
+            }
         }
 
         @Override

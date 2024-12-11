@@ -24,7 +24,6 @@ import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
-import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.RowType;
@@ -33,7 +32,6 @@ import io.trino.spi.type.SqlDecimal;
 import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
-import io.trino.spi.type.VarbinaryType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -50,8 +48,10 @@ import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
 import static io.trino.hive.formats.FormatTestUtils.readTrinoValues;
 import static io.trino.hive.formats.FormatTestUtils.toPage;
 import static io.trino.hive.formats.FormatTestUtils.toSqlTimestamp;
+import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
+import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,8 +60,8 @@ public class TestIonFormat
     private static final List<Column> TEST_COLUMNS = List.of(
             new Column("magic_num", INTEGER, 0),
             new Column("some_text", VARCHAR, 1),
-            new Column("is_summer", BooleanType.BOOLEAN, 2),
-            new Column("byte_clob", VarbinaryType.VARBINARY, 3),
+            new Column("is_summer", BOOLEAN, 2),
+            new Column("byte_clob", VARBINARY, 3),
             new Column("sequencer", new ArrayType(INTEGER), 4),
             new Column("struction", RowType.rowType(
                     field("foo", INTEGER),
@@ -77,6 +77,44 @@ public class TestIonFormat
                         field("bar", VARCHAR)),
                 "{ bar: baz, foo: 31, ignored: true }",
                 List.of(31, "baz"));
+    }
+
+    @Test
+    public void testVariousTlvs()
+            throws IOException
+    {
+        RowType rowType = RowType.rowType(field("foo", INTEGER), field("bar", VARCHAR));
+        List<Object> expected = new ArrayList<>(2);
+        expected.add(null);
+        expected.add(null);
+
+        assertValues(rowType,
+                // empty struct, untyped null, struct null, and explicitly typed null null, phew.
+                "{} null null.struct null.null",
+                expected, expected, expected, expected);
+
+        Assertions.assertThrows(TrinoException.class, () -> {
+            assertValues(rowType, "null.int", expected);
+            assertValues(rowType, "[]", expected);
+        });
+    }
+
+    @Test
+    public void testColumnMistypings()
+    {
+        RowType rowType = RowType.rowType(field("foo", INTEGER), field("bar", BOOLEAN));
+
+        List<String> ions = List.of(
+                "{ foo: blarg,     bar: false }",
+                "{ foo: 12345,     bar: blarg }",
+                "{ foo: null.list, bar: false }",
+                "{ foo: 12345,     bar: null.int }");
+
+        for (String ion : ions) {
+            Assertions.assertThrows(TrinoException.class, () -> {
+                assertValues(rowType, ion, List.of());
+            });
+        }
     }
 
     @Test
