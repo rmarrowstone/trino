@@ -13,8 +13,10 @@
  */
 package io.trino.hive.formats.ion;
 
+import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
 import com.amazon.ion.IonType;
+import com.amazon.ion.Timestamp;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
@@ -33,6 +35,7 @@ import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.Decimals;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.IntegerType;
@@ -48,8 +51,9 @@ import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
-import java.time.ZoneId;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -116,7 +120,7 @@ public class IonDecoderFactory
             case BigintType t -> wrapDecoder(longDecoder, t, IonType.INT);
             case RealType t -> wrapDecoder(realDecoder, t, IonType.FLOAT);
             case DoubleType t -> wrapDecoder(floatDecoder, t, IonType.FLOAT);
-            case DecimalType t -> wrapDecoder(decimalDecoder(t), t, IonType.DECIMAL);
+            case DecimalType t -> wrapDecoder(decimalDecoder(t), t, IonType.DECIMAL, IonType.INT);
             case BooleanType t -> wrapDecoder(boolDecoder, t, IonType.BOOL);
             case DateType t -> wrapDecoder(dateDecoder, t, IonType.TIMESTAMP);
             case TimestampType t -> wrapDecoder(timestampDecoder(t), t, IonType.TIMESTAMP);
@@ -318,45 +322,65 @@ public class IonDecoderFactory
 
     private static BlockDecoder decimalDecoder(DecimalType type)
     {
-        if (type.isShort()) {
-            return (reader, builder) -> {
-                long unscaled = reader.bigDecimalValue()
-                        .setScale(type.getScale(), RoundingMode.UNNECESSARY)
-                        .unscaledValue()
-                        .longValue();
-                type.writeLong(builder, unscaled);
-            };
-        }
-        else {
-            return (reader, builder) -> {
-                Int128 unscaled = Int128.valueOf(reader.bigDecimalValue()
-                        .setScale(type.getScale(), RoundingMode.UNNECESSARY)
-                        .unscaledValue());
-                type.writeObject(builder, unscaled);
-            };
-        }
+        int precision = type.getPrecision();
+        int scale = type.getScale();
+
+        return (reader, builder) -> {
+            try {
+                BigDecimal decimal = reader.bigDecimalValue();
+                BigInteger unscaled = decimal
+                        .setScale(scale, RoundingMode.UNNECESSARY)
+                        .unscaledValue();
+
+                if (Decimals.overflows(unscaled, precision)) {
+                    throw new TrinoException(StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE,
+                            "Decimal value %s does not fit %d digits of precision and %d of scale!"
+                                    .formatted(decimal, precision, scale));
+                }
+                if (type.isShort()) {
+                    type.writeLong(builder, unscaled.longValue());
+                }
+                else {
+                    type.writeObject(builder, Int128.valueOf(unscaled));
+                }
+            }
+            catch (ArithmeticException e) {
+                throw new TrinoException(StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE,
+                        "Decimal value %s does not fit %d digits of scale!".formatted(reader.bigDecimalValue(), scale));
+            }
+        };
     }
 
     private static final BlockDecoder byteDecoder = (ionReader, blockBuilder) ->
-            TinyintType.TINYINT.writeLong(blockBuilder, ionReader.longValue());
+            TinyintType.TINYINT.writeLong(blockBuilder, readLong(ionReader));
 
     private static final BlockDecoder shortDecoder = (ionReader, blockBuilder) ->
-            SmallintType.SMALLINT.writeLong(blockBuilder, ionReader.longValue());
+            SmallintType.SMALLINT.writeLong(blockBuilder, readLong(ionReader));
 
     private static final BlockDecoder intDecoder = (ionReader, blockBuilder) ->
-            IntegerType.INTEGER.writeLong(blockBuilder, ionReader.longValue());
+            IntegerType.INTEGER.writeLong(blockBuilder, readLong(ionReader));
 
     private static final BlockDecoder longDecoder = (ionReader, blockBuilder) ->
-            BigintType.BIGINT.writeLong(blockBuilder, ionReader.longValue());
+            BigintType.BIGINT.writeLong(blockBuilder, readLong(ionReader));
+
+    private static long readLong(IonReader ionReader)
+    {
+        try {
+            return ionReader.longValue();
+        }
+        catch (IonException e) {
+            throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR, e.getMessage());
+        }
+    }
 
     private static final BlockDecoder realDecoder = (ionReader, blockBuilder) -> {
         double readValue = ionReader.doubleValue();
         if (readValue == (float) readValue) {
-            RealType.REAL.writeFloat(blockBuilder, (float) ionReader.doubleValue());
+            RealType.REAL.writeFloat(blockBuilder, (float) readValue);
         }
         else {
-            // todo: some kind of "permissive truncate" flag
-            throw new IllegalArgumentException("Won't truncate double precise float to real!");
+            throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                    "Won't truncate double precise float to real!");
         }
     };
 
@@ -369,8 +393,11 @@ public class IonDecoderFactory
     private static final BlockDecoder boolDecoder = (ionReader, blockBuilder) ->
             BooleanType.BOOLEAN.writeBoolean(blockBuilder, ionReader.booleanValue());
 
-    private static final BlockDecoder dateDecoder = (ionReader, blockBuilder) ->
-            DateType.DATE.writeLong(blockBuilder, ionReader.timestampValue().dateValue().toInstant().atZone(ZoneId.of("UTC")).toLocalDate().toEpochDay());
+    private static final BlockDecoder dateDecoder = (ionReader, blockBuilder) -> {
+        Timestamp ionTs = ionReader.timestampValue();
+        LocalDate localDate = LocalDate.of(ionTs.getZYear(), ionTs.getZMonth(), ionTs.getZDay());
+        DateType.DATE.writeLong(blockBuilder, localDate.toEpochDay());
+    };
 
     private static final BlockDecoder binaryDecoder = (ionReader, blockBuilder) ->
             VarbinaryType.VARBINARY.writeSlice(blockBuilder, Slices.wrappedBuffer(ionReader.newBytes()));

@@ -14,11 +14,9 @@
 package io.trino.hive.formats.ion;
 
 import com.amazon.ion.IonDatagram;
-import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
 import com.amazon.ion.IonSystem;
 import com.amazon.ion.IonWriter;
-import com.amazon.ion.Timestamp;
 import com.amazon.ion.system.IonReaderBuilder;
 import com.amazon.ion.system.IonSystemBuilder;
 import com.google.common.collect.ImmutableMap;
@@ -27,21 +25,21 @@ import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.MapType;
+import io.trino.spi.type.RealType;
 import io.trino.spi.type.RowType;
+import io.trino.spi.type.SqlDate;
 import io.trino.spi.type.SqlDecimal;
-import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
-import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TypeOperators;
-import io.trino.spi.type.VarbinaryType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -50,9 +48,11 @@ import java.util.stream.IntStream;
 import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
 import static io.trino.hive.formats.FormatTestUtils.readTrinoValues;
 import static io.trino.hive.formats.FormatTestUtils.toPage;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
+import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,7 +64,7 @@ public class TestIonFormat
             new Column("magic_num", INTEGER, 0),
             new Column("some_text", VARCHAR, 1),
             new Column("is_summer", BOOLEAN, 2),
-            new Column("byte_clob", VarbinaryType.VARBINARY, 3),
+            new Column("byte_clob", VARBINARY, 3),
             new Column("sequencer", new ArrayType(INTEGER), 4),
             new Column("struction", RowType.rowType(
                     field("foo", INTEGER),
@@ -247,22 +247,54 @@ public class TestIonFormat
     }
 
     @Test
-    public void testPicoPreciseTimestamp()
+    public void testIonIntTooLargeForLong()
             throws IOException
     {
-        Timestamp ionTimestamp = Timestamp.forSecond(2067, 8, 9, 11, 22, new BigDecimal("33.445566"), 0);
-        long epochMicros = ionTimestamp.getDecimalMillis().movePointRight(3).longValue();
-        assertValues(
-                RowType.rowType(field("my_ts", TimestampType.TIMESTAMP_PICOS)),
-                "{ my_ts: 2067-08-09T11:22:33.445566778899Z }",
-                List.of(SqlTimestamp.newInstance(12, epochMicros, 778899)));
+        Assertions.assertThrows(TrinoException.class, () -> {
+            assertValues(RowType.rowType(field("my_bigint", BIGINT)),
+                    "{ my_bigint: 18446744073709551786 }",
+                    List.of());
+        });
     }
 
     @Test
-    public void testOverPreciseTimestamps()
-            throws IonException
+    public void testDoubleAsFloat()
+            throws IOException
     {
-        // todo: implement
+        RowType rowType = RowType.rowType(field("my_float", RealType.REAL));
+        assertValues(
+                rowType,
+                "{ my_float: 625e-3 }",
+                List.of(.625f));
+
+        Assertions.assertThrows(TrinoException.class, () -> {
+            assertValues(
+                    rowType,
+                    "{ my_float: 9e+99 }",
+                    List.of());
+        });
+    }
+
+    @Test
+    public void testDateDecoding()
+            throws IOException
+    {
+        RowType rowType = RowType.rowType(field("my_date", DateType.DATE));
+        SqlDate expected = new SqlDate((int) LocalDate.of(2022, 2, 22).toEpochDay());
+
+        List<String> ions = List.of(
+                "{ my_date: 2022-02-22T }",
+                "{ my_date: 2022-02-21T12:00-12:00 } ",
+                "{ my_date: 2022-02-22T22:22:22Z }",
+                "{ my_date: 2022-02-23T00:00+01:00 }",
+                "{ my_date: 2022-02-22T00:01Z }",
+                "{ my_date: 2022-02-22T00:00:01Z }",
+                "{ my_date: 2022-02-22T00:00:00.001Z }",
+                "{ my_date: 2022-02-22T23:59:59.999999999Z }");
+
+        for (String ion : ions) {
+            assertValues(rowType, ion, List.of(expected));
+        }
     }
 
     @Test
@@ -276,17 +308,52 @@ public class TestIonFormat
                 "{ amount: 1234.00, big_amount: 1234.00000 }"
                         + "{ amount: 1234d0, big_amount: 1234d0 }"
                         + "{ amount: 12d2, big_amount: 12d2 }"
-                        + "{ amount: 1234.000, big_amount: 1234.000000 }",
+                        + "{ amount: 1234.000, big_amount: 1234.000000 }"
+                        + "{ amount: 1234, big_amount: 1234 }", // these are both IonInts
                 List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)),
                 List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)),
                 List.of(new SqlDecimal(BigInteger.valueOf(120000), 10, 2), new SqlDecimal(BigInteger.valueOf(120000000), 25, 5)),
+                List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)),
                 List.of(new SqlDecimal(BigInteger.valueOf(123400), 10, 2), new SqlDecimal(BigInteger.valueOf(123400000), 25, 5)));
     }
 
     @Test
-    public void testOversizeOrOverpreciseDecimals()
+    public void testNumbersTooBigForShortDecimal()
     {
-        // todo: implement
+        RowType rowType = RowType.rowType(
+                field("amount", DecimalType.createDecimalType(4, 2)));
+
+        List<String> ions = List.of(
+                "{ amount: 123.4 }",
+                "{ amount: 1.234 }",
+                "{ amount: 123 }",
+                "{ amount: 1234d-10 }",
+                "{ amount: 1234d2 }");
+
+        for (String ionText : ions) {
+            Assertions.assertThrows(TrinoException.class, () ->
+                    assertValues(rowType, ionText, List.of()));
+        }
+    }
+
+    @Test
+    public void testNumbersTooBigForDecimal128()
+    {
+        RowType rowType = RowType.rowType(
+                field("amount", DecimalType.createDecimalType(20, 2)));
+
+        List<String> ions = List.of(
+                "{ amount: 12345678901234567890.4 }",
+                "{ amount: 1.234 }",
+                "{ amount: 12345678901234567890 }",
+                "{ amount: 999999999999999999999999999999999999.999 }", // 39 nines
+                "{ amount: 1234d-10 }",
+                "{ amount: 1234d22 }");
+
+        for (String ionText : ions) {
+            Assertions.assertThrows(TrinoException.class, () ->
+                    assertValues(rowType, ionText, List.of()));
+        }
     }
 
     @Test
