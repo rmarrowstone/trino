@@ -13,7 +13,6 @@
  */
 package io.trino.hive.formats.ion;
 
-import com.amazon.ion.IonException;
 import com.amazon.ion.IonReader;
 import com.amazon.ion.IonType;
 import com.google.common.collect.ImmutableList;
@@ -21,7 +20,8 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.trino.hive.formats.DistinctMapKeys;
 import io.trino.hive.formats.line.Column;
-import io.trino.spi.PageBuilder;
+import io.trino.spi.StandardErrorCode;
+import io.trino.spi.TrinoException;
 import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.MapBlockBuilder;
@@ -58,8 +58,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.IntFunction;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 public class IonDecoderFactory
 {
@@ -71,13 +69,37 @@ public class IonDecoderFactory
      * The decoder expects to decode the _current_ Ion Value.
      * It also expects that the calling code will manage the PageBuilder.
      * <p>
+     *
+     * @param strictPathing controls behavior when encountering mistyped
+     * values during path extraction. That is outside (before), the trino
+     * type model. The ion-hive-serde used path extraction for navigating
+     * the top-level-values even if no path extractions were configured.
+     * So, in absence of support for path extraction configurations this
+     * still affects the handling of mistyped top-level-values.
+     * todo: revisit the above once path extraction config is supported.
      */
-    public static IonDecoder buildDecoder(List<Column> columns)
+    public static IonDecoder buildDecoder(List<Column> columns, boolean strictPathing)
     {
-        return RowDecoder.forFields(
+        RowDecoder rowDecoder = RowDecoder.forFields(
                 columns.stream()
                         .map(c -> new RowType.Field(Optional.of(c.name()), c.type()))
                         .toList());
+
+        return (ionReader, pageBuilder) -> {
+            IonType ionType = ionReader.getType();
+            IntFunction<BlockBuilder> blockSelector = pageBuilder::getBlockBuilder;
+
+            if (ionType == IonType.STRUCT && !ionReader.isNullValue()) {
+                rowDecoder.decode(ionReader, blockSelector);
+            }
+            else if (ionType == IonType.STRUCT || ionType == IonType.NULL || !strictPathing) {
+                rowDecoder.appendNulls(blockSelector);
+            }
+            else {
+                throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                        "Top-level-value of IonType %s is not valid with strict typing.".formatted(ionType));
+            }
+        };
     }
 
     private interface BlockDecoder
@@ -88,22 +110,22 @@ public class IonDecoderFactory
     private static BlockDecoder decoderForType(Type type)
     {
         return switch (type) {
-            case TinyintType _ -> wrapDecoder(byteDecoder, IonType.INT);
-            case SmallintType _ -> wrapDecoder(shortDecoder, IonType.INT);
-            case IntegerType _ -> wrapDecoder(intDecoder, IonType.INT);
-            case BigintType _ -> wrapDecoder(longDecoder, IonType.INT);
-            case RealType _ -> wrapDecoder(realDecoder, IonType.FLOAT);
-            case DoubleType _ -> wrapDecoder(floatDecoder, IonType.FLOAT);
-            case BooleanType _ -> wrapDecoder(boolDecoder, IonType.BOOL);
-            case DateType _ -> wrapDecoder(dateDecoder, IonType.TIMESTAMP);
-            case TimestampType t -> wrapDecoder(timestampDecoder(t), IonType.TIMESTAMP);
-            case DecimalType t -> wrapDecoder(decimalDecoder(t), IonType.DECIMAL);
-            case VarcharType _, CharType _ -> wrapDecoder(stringDecoder, IonType.STRING, IonType.SYMBOL);
-            case VarbinaryType _ -> wrapDecoder(binaryDecoder, IonType.BLOB, IonType.CLOB);
-            case MapType mapType -> wrapDecoder(new MapDecoder(mapType, decoderForType(mapType.getValueType())),
-                    IonType.STRUCT);
-            case RowType r -> wrapDecoder(RowDecoder.forFields(r.getFields()), IonType.STRUCT);
-            case ArrayType a -> wrapDecoder(new ArrayDecoder(decoderForType(a.getElementType())), IonType.LIST, IonType.SEXP);
+            case TinyintType t -> wrapDecoder(byteDecoder, t, IonType.INT);
+            case SmallintType t -> wrapDecoder(shortDecoder, t, IonType.INT);
+            case IntegerType t -> wrapDecoder(intDecoder, t, IonType.INT);
+            case BigintType t -> wrapDecoder(longDecoder, t, IonType.INT);
+            case RealType t -> wrapDecoder(realDecoder, t, IonType.FLOAT);
+            case DoubleType t -> wrapDecoder(floatDecoder, t, IonType.FLOAT);
+            case DecimalType t -> wrapDecoder(decimalDecoder(t), t, IonType.DECIMAL);
+            case BooleanType t -> wrapDecoder(boolDecoder, t, IonType.BOOL);
+            case DateType t -> wrapDecoder(dateDecoder, t, IonType.TIMESTAMP);
+            case TimestampType t -> wrapDecoder(timestampDecoder(t), t, IonType.TIMESTAMP);
+            case VarcharType t -> wrapDecoder(stringDecoder, t, IonType.STRING, IonType.SYMBOL);
+            case CharType t -> wrapDecoder(stringDecoder, t, IonType.STRING, IonType.SYMBOL);
+            case VarbinaryType t -> wrapDecoder(binaryDecoder, t, IonType.BLOB, IonType.CLOB);
+            case RowType t -> wrapDecoder(RowDecoder.forFields(t.getFields()), t, IonType.STRUCT);
+            case ArrayType t -> wrapDecoder(new ArrayDecoder(decoderForType(t.getElementType())), t, IonType.LIST, IonType.SEXP);
+            case MapType t -> wrapDecoder(new MapDecoder(t, decoderForType(t.getValueType())), t, IonType.STRUCT);
             default -> throw new IllegalArgumentException(String.format("Unsupported type: %s", type));
         };
     }
@@ -117,16 +139,16 @@ public class IonDecoderFactory
      * <p>
      * This code treats all values as nullable.
      */
-    private static BlockDecoder wrapDecoder(BlockDecoder decoder, IonType... allowedTypes)
+    private static BlockDecoder wrapDecoder(BlockDecoder decoder, Type trinoType, IonType... allowedTypes)
     {
-        final Set<IonType> allowedWithNull = new HashSet<>(Arrays.asList(allowedTypes));
+        Set<IonType> allowedWithNull = new HashSet<>(Arrays.asList(allowedTypes));
         allowedWithNull.add(IonType.NULL);
 
         return (reader, builder) -> {
-            final IonType type = reader.getType();
-            if (!allowedWithNull.contains(type)) {
-                final String expected = allowedWithNull.stream().map(IonType::name).collect(Collectors.joining(", "));
-                throw new IonException(String.format("Encountered value with IonType: %s, required one of %s ", type, expected));
+            final IonType ionType = reader.getType();
+            if (!allowedWithNull.contains(ionType)) {
+                throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                        "Cannot coerce IonType %s to Trino type %s".formatted(ionType, trinoType));
             }
             if (reader.isNullValue()) {
                 builder.appendNull();
@@ -138,39 +160,22 @@ public class IonDecoderFactory
     }
 
     /**
-     * Class is both the Top-Level-Value Decoder and the Row Decoder for nested
-     * structs.
+     * The RowDecoder is used as the BlockDecoder for nested RowTypes and is used for decoding
+     * top-level structs into pages.
      */
     private record RowDecoder(Map<String, Integer> fieldPositions, List<BlockDecoder> fieldDecoders)
-            implements IonDecoder, BlockDecoder
+            implements BlockDecoder
     {
         private static RowDecoder forFields(List<RowType.Field> fields)
         {
             ImmutableList.Builder<BlockDecoder> decoderBuilder = ImmutableList.builder();
             ImmutableMap.Builder<String, Integer> fieldPositionBuilder = ImmutableMap.builder();
-            IntStream.range(0, fields.size())
-                    .forEach(position -> {
-                        RowType.Field field = fields.get(position);
-                        decoderBuilder.add(decoderForType(field.getType()));
-                        fieldPositionBuilder.put(field.getName().get().toLowerCase(Locale.ROOT), position);
-                    });
-
+            for (int pos = 0; pos < fields.size(); pos++) {
+                RowType.Field field = fields.get(pos);
+                decoderBuilder.add(decoderForType(field.getType()));
+                fieldPositionBuilder.put(field.getName().get().toLowerCase(Locale.ROOT), pos);
+            }
             return new RowDecoder(fieldPositionBuilder.buildOrThrow(), decoderBuilder.build());
-        }
-
-        @Override
-        public void decode(IonReader ionReader, PageBuilder pageBuilder)
-        {
-            // todo: we could also map an Ion List to a Struct
-            if (ionReader.getType() != IonType.STRUCT) {
-                throw new IonException("RowType must be Structs! Encountered: " + ionReader.getType());
-            }
-            if (ionReader.isNullValue()) {
-                // todo: is this an error or just a null value?
-                //       i think in the hive serde it's a null record.
-                throw new IonException("Top Level Values must not be null!");
-            }
-            decode(ionReader, pageBuilder::getBlockBuilder);
         }
 
         @Override
@@ -187,7 +192,6 @@ public class IonDecoderFactory
             ionReader.stepIn();
 
             while (ionReader.next() != null) {
-                // todo: case insensitivity
                 final Integer fieldIndex = fieldPositions.get(ionReader.getFieldName().toLowerCase(Locale.ROOT));
                 if (fieldIndex == null) {
                     continue;
@@ -209,6 +213,13 @@ public class IonDecoderFactory
             }
 
             ionReader.stepOut();
+        }
+
+        private void appendNulls(IntFunction<BlockBuilder> blockSelector)
+        {
+            for (int i = 0; i < fieldDecoders.size(); i++) {
+                blockSelector.apply(i).appendNull();
+            }
         }
     }
 

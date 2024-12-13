@@ -25,8 +25,8 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.hive.formats.line.Column;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
+import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
-import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
@@ -50,6 +50,7 @@ import java.util.stream.IntStream;
 import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
 import static io.trino.hive.formats.FormatTestUtils.readTrinoValues;
 import static io.trino.hive.formats.FormatTestUtils.toPage;
+import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -62,7 +63,7 @@ public class TestIonFormat
     private static final List<Column> TEST_COLUMNS = List.of(
             new Column("magic_num", INTEGER, 0),
             new Column("some_text", VARCHAR, 1),
-            new Column("is_summer", BooleanType.BOOLEAN, 2),
+            new Column("is_summer", BOOLEAN, 2),
             new Column("byte_clob", VarbinaryType.VARBINARY, 3),
             new Column("sequencer", new ArrayType(INTEGER), 4),
             new Column("struction", RowType.rowType(
@@ -94,6 +95,59 @@ public class TestIonFormat
                         .put("a", 2)
                         .put("b", 5)
                         .buildOrThrow()));
+    }
+
+    @Test
+    public void testVariousTlvsStrict()
+            throws IOException
+    {
+        RowType rowType = RowType.rowType(field("foo", INTEGER), field("bar", VARCHAR));
+        List<Object> expected = new ArrayList<>(2);
+        expected.add(null);
+        expected.add(null);
+
+        assertValues(rowType,
+                // empty struct, untyped null, struct null, and explicitly typed null null, phew.
+                "{} null null.struct null.null",
+                expected, expected, expected, expected);
+
+        Assertions.assertThrows(TrinoException.class, () -> {
+            assertValues(rowType, "null.int", expected);
+            assertValues(rowType, "[]", expected);
+        });
+    }
+
+    @Test
+    public void testVariousTlvsLax()
+            throws IOException
+    {
+        RowType rowType = RowType.rowType(field("foo", INTEGER), field("bar", VARCHAR));
+        List<Object> expected = new ArrayList<>(2);
+        expected.add(null);
+        expected.add(null);
+
+        assertValues(rowType,
+                false,
+                "{} 37 null.list null.struct null spam false",
+                expected, expected, expected, expected, expected, expected, expected);
+    }
+
+    @Test
+    public void testColumnMistypings()
+    {
+        RowType rowType = RowType.rowType(field("foo", INTEGER), field("bar", BOOLEAN));
+
+        List<String> ions = List.of(
+                "{ foo: blarg,     bar: false }",
+                "{ foo: 12345,     bar: blarg }",
+                "{ foo: null.list, bar: false }",
+                "{ foo: 12345,     bar: null.int }");
+
+        for (String ion : ions) {
+            Assertions.assertThrows(TrinoException.class, () -> {
+                assertValues(rowType, ion, List.of());
+            });
+        }
     }
 
     @Test
@@ -151,8 +205,6 @@ public class TestIonFormat
                 "{ foo: 17, foo: 31, foo: 53 } { foo: 67 }",
                 List.of(53), List.of(67));
     }
-
-    // todo: test for mistyped null and non-null values
 
     @Test
     public void testNestedList()
@@ -282,7 +334,8 @@ public class TestIonFormat
                         .put("a", 2)
                         .put("b", 5)
                         .buildOrThrow());
-        List<Object> row2 = Arrays.asList(31, "somebody", null, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa}), List.of(7, 8, 9), Arrays.asList(null, "qux"), ImmutableMap.builder()
+        List<Object> row2 = Arrays.asList(31, "somebody", null, new SqlVarbinary(new byte[] {(byte) 0x01,
+                (byte) 0xaa}), List.of(7, 8, 9), Arrays.asList(null, "qux"), ImmutableMap.builder()
                 .put("foo", 12)
                 .put("bar", 50)
                 .buildOrThrow());
@@ -298,6 +351,12 @@ public class TestIonFormat
     private void assertValues(RowType rowType, String ionText, List<Object>... expected)
             throws IOException
     {
+        assertValues(rowType, true, ionText, expected);
+    }
+
+    private void assertValues(RowType rowType, Boolean strictTlvs, String ionText, List<Object>... expected)
+            throws IOException
+    {
         List<RowType.Field> fields = rowType.getFields();
         List<Column> columns = IntStream.range(0, fields.size())
                 .boxed()
@@ -306,7 +365,7 @@ public class TestIonFormat
                     return new Column(field.getName().get(), field.getType(), i);
                 })
                 .toList();
-        IonDecoder decoder = IonDecoderFactory.buildDecoder(columns);
+        IonDecoder decoder = IonDecoderFactory.buildDecoder(columns, strictTlvs);
         PageBuilder pageBuilder = new PageBuilder(expected.length, rowType.getFields().stream().map(RowType.Field::getType).toList());
 
         try (IonReader ionReader = IonReaderBuilder.standard().build(ionText)) {
