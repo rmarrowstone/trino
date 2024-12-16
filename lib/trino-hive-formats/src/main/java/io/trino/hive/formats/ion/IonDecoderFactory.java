@@ -225,6 +225,9 @@ public class IonDecoderFactory
         public MapDecoder(MapType mapType, BlockDecoder valueDecoder)
         {
             this.keyType = mapType.getKeyType();
+            if (!(keyType instanceof VarcharType _ || keyType instanceof CharType _)) {
+                throw new UnsupportedOperationException("Unsupported map key type: " + keyType);
+            }
             this.valueType = mapType.getValueType();
             this.valueDecoder = valueDecoder;
             this.distinctMapKeys = new DistinctMapKeys(mapType, true);
@@ -238,12 +241,7 @@ public class IonDecoderFactory
             ionReader.stepIn();
             // buffer the keys and values
             while (ionReader.next() != null) {
-                if (keyType instanceof VarcharType _ || keyType instanceof CharType _) {
-                    VarcharType.VARCHAR.writeSlice(keyBlockBuilder, Slices.utf8Slice(ionReader.getFieldName()));
-                }
-                else {
-                    throw new UnsupportedOperationException("Unsupported map key type: " + keyType);
-                }
+                VarcharType.VARCHAR.writeSlice(keyBlockBuilder, Slices.utf8Slice(ionReader.getFieldName()));
                 valueDecoder.decode(ionReader, valueBlockBuilder);
             }
             ValueBlock keys = keyBlockBuilder.buildValueBlock();

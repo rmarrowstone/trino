@@ -167,6 +167,17 @@ public class IonEncoderFactory
                         BlockEncoder encoder)
             implements BlockEncoder
     {
+        public MapEncoder(MapType mapType, Type keyType, BlockEncoder encoder)
+
+        {
+            this.mapType = mapType;
+            if (!(keyType instanceof VarcharType _ || keyType instanceof CharType _)) {
+                throw new UnsupportedOperationException("Unsupported map key type: " + keyType);
+            }
+            this.keyType = keyType;
+            this.encoder = encoder;
+        }
+
         @Override
         public void encode(IonWriter writer, Block block, int position)
                 throws IOException
@@ -179,13 +190,7 @@ public class IonEncoderFactory
             writer.stepIn(IonType.STRUCT);
             for (int i = 0; i < sqlMap.getSize(); i++) {
                 checkArgument(!rawKeyBlock.isNull(rawOffset + i), "map key is null");
-                if (keyType instanceof VarcharType _ || keyType instanceof CharType _) {
-                    writer.setFieldName(VarcharType.VARCHAR.getSlice(rawKeyBlock, rawOffset + i).toString(StandardCharsets.UTF_8));
-                }
-                else {
-                    throw new UnsupportedOperationException("Unsupported map key type: " + keyType);
-                }
-
+                writer.setFieldName(VarcharType.VARCHAR.getSlice(rawKeyBlock, rawOffset + i).toString(StandardCharsets.UTF_8));
                 encoder.encode(writer, rawValueBlock, rawOffset + i);
             }
             writer.stepOut();
