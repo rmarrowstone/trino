@@ -41,6 +41,8 @@ import io.trino.spi.type.RowType;
 import io.trino.testing.MaterializedResult;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -59,8 +61,13 @@ import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.plugin.hive.HiveTestUtils.projectedColumn;
 import static io.trino.plugin.hive.HiveTestUtils.toHiveBaseColumnHandle;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
+import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY;
+import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED;
+import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY;
 import static io.trino.plugin.hive.ion.IonWriterOptions.BINARY_ENCODING;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_ENCODING_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_NULL_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_TIMESTAMP_OFFSET_PROPERTY;
 import static io.trino.plugin.hive.ion.IonWriterOptions.TEXT_ENCODING;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
@@ -159,6 +166,28 @@ public class IonPageSourceSmokeTest
 
         Optional<ConnectorPageSource> connectorPageSource = fixture.getOptionalPageSource();
         Assertions.assertTrue(connectorPageSource.isEmpty(), "Expected empty page source when native Trino is disabled");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "ion.foo.fail_on_overflow",
+            "ion.foo.path_extractor",
+            "ion.bar.serialize_as",
+            FAIL_ON_OVERFLOW_PROPERTY,
+            PATH_EXTRACTION_CASE_SENSITIVITY,
+            IGNORE_MALFORMED,
+            ION_TIMESTAMP_OFFSET_PROPERTY,
+            ION_SERIALIZATION_AS_NULL_PROPERTY,
+    })
+    void testUnsupportedProperties(String property)
+            throws IOException
+    {
+        TestFixture fixture = new TestFixture(FOO_BAR_COLUMNS)
+                .withUnsupportedProperties(property);
+        fixture.writeIonTextFile("{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }");
+
+        Optional<ConnectorPageSource> connectorPageSource = fixture.getOptionalPageSource();
+        Assertions.assertTrue(connectorPageSource.isEmpty(), "Expected empty page source when there are unsupported Serde properties");
     }
 
     @Test
@@ -264,6 +293,13 @@ public class IonPageSourceSmokeTest
         TestFixture withStrictPathTyping(String strict)
         {
             tableProperties.put(IonReaderOptions.STRICT_PATH_TYPING_PROPERTY, strict);
+            return this;
+        }
+
+        TestFixture withUnsupportedProperties(String property)
+        {
+            // The value of the property is just placeholder
+            tableProperties.put(property, "property_value");
             return this;
         }
 

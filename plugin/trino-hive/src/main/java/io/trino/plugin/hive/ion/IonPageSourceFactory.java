@@ -15,6 +15,7 @@ package io.trino.plugin.hive.ion;
 
 import com.amazon.ion.IonReader;
 import com.amazon.ion.system.IonReaderBuilder;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.io.CountingInputStream;
 import com.google.inject.Inject;
 import io.trino.filesystem.Location;
@@ -45,6 +46,8 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -52,6 +55,14 @@ import static io.trino.hive.formats.HiveClassNames.ION_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
+import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY;
+import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY_WITH_COLUMN;
+import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED;
+import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY;
+import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTOR_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_NULL_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_TIMESTAMP_OFFSET_PROPERTY;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
 
 public class IonPageSourceFactory
@@ -60,6 +71,16 @@ public class IonPageSourceFactory
     private final TrinoFileSystemFactory trinoFileSystemFactory;
     // this is used as a feature flag to enable Ion native trino integration
     private final boolean nativeTrinoEnabled;
+
+    private static final Set<String> UNSUPPORTED_SERDE_PROPERTIES = ImmutableSet.of(
+            FAIL_ON_OVERFLOW_PROPERTY,
+            FAIL_ON_OVERFLOW_PROPERTY_WITH_COLUMN,
+            PATH_EXTRACTOR_PROPERTY,
+            PATH_EXTRACTION_CASE_SENSITIVITY,
+            IGNORE_MALFORMED,
+            ION_TIMESTAMP_OFFSET_PROPERTY,
+            ION_SERIALIZATION_AS_NULL_PROPERTY,
+            ION_SERIALIZATION_AS_PROPERTY);
 
     @Inject
     public IonPageSourceFactory(TrinoFileSystemFactory trinoFileSystemFactory, HiveConfig hiveConfig)
@@ -89,6 +110,11 @@ public class IonPageSourceFactory
             // on their use case
             return Optional.empty();
         }
+
+        if (schema.serdeProperties().entrySet().stream().anyMatch(entry -> isUnsupportedProperty(entry.getKey()))) {
+            return Optional.empty();
+        }
+
         if (!ION_SERDE_CLASS.equals(schema.serializationLibraryName())) {
             return Optional.empty();
         }
@@ -146,5 +172,16 @@ public class IonPageSourceFactory
         catch (IOException e) {
             throw new TrinoException(HIVE_CANNOT_OPEN_SPLIT, splitError(e, path, start, length), e);
         }
+    }
+
+    private boolean isUnsupportedProperty(String property)
+    {
+        return UNSUPPORTED_SERDE_PROPERTIES.stream()
+                .anyMatch(pattern -> {
+                    if (pattern.contains("\\w+")) {
+                        return Pattern.compile(pattern).matcher(property).matches();
+                    }
+                    return pattern.equals(property);
+                });
     }
 }
