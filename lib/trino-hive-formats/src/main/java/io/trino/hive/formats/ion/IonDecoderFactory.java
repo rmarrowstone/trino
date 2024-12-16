@@ -45,6 +45,7 @@ import io.trino.spi.type.RealType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.SmallintType;
 import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.Timestamps;
 import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
@@ -299,25 +300,31 @@ public class IonDecoderFactory
 
     private static BlockDecoder timestampDecoder(TimestampType type)
     {
-        // todo: no attempt is made at handling offsets or lack thereof
-        if (type.isShort()) {
-            return (reader, builder) -> {
-                long micros = reader.timestampValue().getDecimalMillis()
-                        .setScale(type.getPrecision() - 3, RoundingMode.HALF_EVEN)
-                        .movePointRight(3)
-                        .longValue();
-                type.writeLong(builder, micros);
-            };
-        }
-        else {
-            return (reader, builder) -> {
-                BigDecimal decimalMicros = reader.timestampValue().getDecimalMillis()
-                        .movePointRight(3);
-                BigDecimal subMicrosFrac = decimalMicros.remainder(BigDecimal.ONE)
-                        .movePointRight(6);
-                type.writeObject(builder, new LongTimestamp(decimalMicros.longValue(), subMicrosFrac.intValue()));
-            };
-        }
+        // Ion supports arbitrarily precise Timestamps.
+        // Other Hive formats are using the DecodedTimestamp and TrinoTimestampEncoders in
+        // io.trino.plugin.base.type but those don't cover picos.
+        // This code uses same pattern of splitting the parsed timestamp into (seconds, fraction)
+        // then rounding the fraction using Timestamps.round() ensures consistency with the others
+        // while capturing picos if present. Fractional precision beyond picos is ignored.
+        return (reader, builder) -> {
+            BigDecimal decimalSeconds = reader.timestampValue()
+                    .getDecimalMillis()
+                    .movePointLeft(3);
+            BigDecimal decimalPicos = decimalSeconds.remainder(BigDecimal.ONE)
+                    .movePointRight(12);
+
+            long fractionalPicos = Timestamps.round(decimalPicos.longValue(), 12 - type.getPrecision());
+            long epochMicros = decimalSeconds.longValue() * Timestamps.MICROSECONDS_PER_SECOND
+                    + fractionalPicos / Timestamps.PICOSECONDS_PER_MICROSECOND;
+
+            if (type.isShort()) {
+                type.writeLong(builder, epochMicros);
+            }
+            else {
+                type.writeObject(builder,
+                        new LongTimestamp(epochMicros, (int) (fractionalPicos % Timestamps.PICOSECONDS_PER_MICROSECOND)));
+            }
+        };
     }
 
     private static BlockDecoder decimalDecoder(DecimalType type)

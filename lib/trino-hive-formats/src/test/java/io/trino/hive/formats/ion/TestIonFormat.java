@@ -32,7 +32,9 @@ import io.trino.spi.type.RealType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.SqlDate;
 import io.trino.spi.type.SqlDecimal;
+import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
+import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TypeOperators;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -40,6 +42,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -48,6 +51,7 @@ import java.util.stream.IntStream;
 import static io.trino.hive.formats.FormatTestUtils.assertColumnValuesEquals;
 import static io.trino.hive.formats.FormatTestUtils.readTrinoValues;
 import static io.trino.hive.formats.FormatTestUtils.toPage;
+import static io.trino.hive.formats.FormatTestUtils.toSqlTimestamp;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.IntegerType.INTEGER;
@@ -294,6 +298,38 @@ public class TestIonFormat
 
         for (String ion : ions) {
             assertValues(rowType, ion, List.of(expected));
+        }
+    }
+
+    @Test
+    public void testTimestampDecoding()
+            throws IOException
+    {
+        List<String> ions = List.of(
+                "{ my_ts: 2067-08-09T11:22:33Z }",
+                "{ my_ts: 2067-08-09T11:22:33.111Z }",
+                "{ my_ts: 2067-08-09T11:22:33.111222Z }",
+                "{ my_ts: 2067-08-09T11:22:33.111222333Z }",
+                "{ my_ts: 2067-08-09T11:22:33.111222333444Z }",
+                // fraction beyond picos is truncated
+                "{ my_ts: 2067-08-09T11:22:33.111222333444555Z }");
+
+        LocalDateTime dateTimeToSeconds = LocalDateTime.of(2067, 8, 9, 11, 22, 33);
+        List<SqlTimestamp> sqlTimestamps = List.of(
+                toSqlTimestamp(TimestampType.TIMESTAMP_SECONDS, dateTimeToSeconds),
+                toSqlTimestamp(TimestampType.TIMESTAMP_MILLIS, dateTimeToSeconds.plusNanos(111000000)),
+                toSqlTimestamp(TimestampType.TIMESTAMP_MICROS, dateTimeToSeconds.plusNanos(111222000)),
+                toSqlTimestamp(TimestampType.TIMESTAMP_NANOS, dateTimeToSeconds.plusNanos(111222333)),
+                toSqlTimestamp(TimestampType.TIMESTAMP_PICOS, dateTimeToSeconds.plusNanos(111222333), 444));
+
+        for (int i = 0; i < sqlTimestamps.size(); i++) {
+            SqlTimestamp sqlTimestamp = sqlTimestamps.get(i);
+            RowType rowType = RowType.rowType(
+                    field("my_ts", TimestampType.createTimestampType(sqlTimestamp.getPrecision())));
+
+            for (int j = i; j < ions.size(); j++) {
+                assertValues(rowType, ions.get(j), List.of(sqlTimestamp));
+            }
         }
     }
 
