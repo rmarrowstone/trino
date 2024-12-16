@@ -43,6 +43,7 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -57,6 +58,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class TestIonFormat
 {
     private static final TypeOperators TYPE_OPERATORS = new TypeOperators();
+
+    private static final List<Column> TEST_COLUMNS = List.of(
+            new Column("magic_num", INTEGER, 0),
+            new Column("some_text", VARCHAR, 1),
+            new Column("is_summer", BooleanType.BOOLEAN, 2),
+            new Column("byte_clob", VarbinaryType.VARBINARY, 3),
+            new Column("sequencer", new ArrayType(INTEGER), 4),
+            new Column("struction", RowType.rowType(
+                    field("foo", INTEGER),
+                    field("bar", VARCHAR)), 5),
+            new Column("map", new MapType(VARCHAR, INTEGER, TYPE_OPERATORS), 6));
 
     @Test
     public void testSuperBasicStruct()
@@ -229,17 +241,6 @@ public class TestIonFormat
     public void testEncode()
             throws IOException
     {
-        List<Column> columns = List.of(
-                new Column("magic_num", INTEGER, 0),
-                new Column("some_text", VARCHAR, 1),
-                new Column("is_summer", BooleanType.BOOLEAN, 2),
-                new Column("byte_clob", VarbinaryType.VARBINARY, 3),
-                new Column("sequencer", new ArrayType(INTEGER), 4),
-                new Column("struction", RowType.rowType(
-                        field("foo", INTEGER),
-                        field("bar", VARCHAR)), 5),
-                new Column("map", new MapType(VARCHAR, INTEGER, TYPE_OPERATORS), 6));
-
         List<Object> row1 = List.of(17, "something", true, new SqlVarbinary(new byte[] {(byte) 0xff}), List.of(1, 2,
                 3), List.of(51, "baz"), ImmutableMap.builder()
                 .put("a", 2)
@@ -255,8 +256,43 @@ public class TestIonFormat
                 { magic_num:31, some_text:"somebody", is_summer:false, byte_clob:{{Aao=}}, sequencer:[7,8,9], struction:{ foo:67, bar:"qux"}, map: {foo: 12, bar: 50}}
                 """;
 
-        Page page = toPage(columns, row1, row2);
-        assertIonEquivalence(columns, page, ionText);
+        Page page = toPage(TEST_COLUMNS, row1, row2);
+        assertIonEquivalence(TEST_COLUMNS, page, ionText);
+    }
+
+    @Test
+    public void testEncodeWithNullField()
+            throws IOException
+    {
+        List<Object> row1 = Arrays.asList(null, null, null, null, null, null, null);
+        String ionText = """
+                {}
+                """;
+
+        Page page = toPage(TEST_COLUMNS, row1);
+        assertIonEquivalence(TEST_COLUMNS, page, ionText);
+    }
+
+    @Test
+    public void testEncodeWithNullNestedField()
+            throws IOException
+    {
+        List<Object> row1 = Arrays.asList(17, "something", true, new SqlVarbinary(new byte[] {(byte) 0xff}),
+                List.of(1, 2, 3), Arrays.asList(null, "baz"), ImmutableMap.builder()
+                        .put("a", 2)
+                        .put("b", 5)
+                        .buildOrThrow());
+        List<Object> row2 = Arrays.asList(31, "somebody", null, new SqlVarbinary(new byte[] {(byte) 0x01, (byte) 0xaa}), List.of(7, 8, 9), Arrays.asList(null, "qux"), ImmutableMap.builder()
+                .put("foo", 12)
+                .put("bar", 50)
+                .buildOrThrow());
+        String ionText = """
+                { magic_num:17, some_text:"something", is_summer:true, byte_clob:{{/w==}}, sequencer:[1,2,3], struction:{bar:"baz"},  map: {a: 2, b: 5}}
+                { magic_num:31, some_text:"somebody", byte_clob:{{Aao=}}, sequencer:[7,8,9], struction:{bar:"qux"}, map: {foo: 12, bar: 50}}
+                """;
+
+        Page page = toPage(TEST_COLUMNS, row1, row2);
+        assertIonEquivalence(TEST_COLUMNS, page, ionText);
     }
 
     private void assertValues(RowType rowType, String ionText, List<Object>... expected)
