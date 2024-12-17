@@ -23,6 +23,7 @@ import io.trino.filesystem.TrinoInputFile;
 import io.trino.parquet.Column;
 import io.trino.parquet.Field;
 import io.trino.parquet.ParquetReaderOptions;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.deltalake.DeltaHiveTypeTranslator;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.DeltaLakeColumnMetadata;
@@ -36,7 +37,6 @@ import io.trino.plugin.deltalake.transactionlog.RemoveFileEntry;
 import io.trino.plugin.deltalake.transactionlog.SidecarEntry;
 import io.trino.plugin.deltalake.transactionlog.TransactionEntry;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeParquetFileStatistics;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveColumnHandle.ColumnType;
 import io.trino.plugin.hive.HiveColumnProjectionInfo;
@@ -388,6 +388,7 @@ public class CheckpointEntryIterator
 
     private static HiveColumnHandle toPartitionValuesParsedField(HiveColumnHandle addColumn, DeltaLakeColumnHandle partitionColumn)
     {
+        checkArgument(partitionColumn.isBaseColumn(), "partitionColumn must be a base column: %s", partitionColumn);
         return new HiveColumnHandle(
                 addColumn.getBaseColumnName(),
                 addColumn.getBaseHiveColumnIndex(),
@@ -395,7 +396,7 @@ public class CheckpointEntryIterator
                 addColumn.getBaseType(),
                 Optional.of(new HiveColumnProjectionInfo(
                         ImmutableList.of(0, 0), // hiveColumnIndex; we provide fake value because we always find columns by name
-                        ImmutableList.of("partitionvalues_parsed", partitionColumn.columnName()),
+                        ImmutableList.of("partitionvalues_parsed", partitionColumn.basePhysicalColumnName()),
                         DeltaHiveTypeTranslator.toHiveType(partitionColumn.type()),
                         partitionColumn.type())),
                 HiveColumnHandle.ColumnType.REGULAR,
@@ -453,7 +454,8 @@ public class CheckpointEntryIterator
                 commitInfo.getString("clusterId"),
                 commitInfo.getInt("readVersion"),
                 commitInfo.getString("isolationLevel"),
-                Optional.of(commitInfo.getBoolean("isBlindAppend")));
+                Optional.of(commitInfo.getBoolean("isBlindAppend")),
+                commitInfo.getMap(stringMap, "operationMetrics"));
         log.debug("Result: %s", result);
         return DeltaLakeTransactionLogEntry.commitInfoEntry(result);
     }

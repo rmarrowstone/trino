@@ -132,12 +132,15 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiFunction;
 import java.util.function.Predicate;
@@ -146,10 +149,14 @@ import java.util.stream.Stream;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.airlift.slice.Slices.wrappedBuffer;
 import static io.trino.plugin.base.util.JsonTypeUtil.jsonParse;
 import static io.trino.plugin.base.util.JsonTypeUtil.toJsonValue;
+import static io.trino.plugin.geospatial.GeoFunctions.stAsBinary;
+import static io.trino.plugin.geospatial.GeoFunctions.stGeomFromBinary;
 import static io.trino.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalDefaultScale;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRounding;
@@ -278,6 +285,7 @@ public class PostgreSqlClient
     private final Type jsonType;
     private final Type uuidType;
     private final MapType varcharMapType;
+    private final Type geometryType;
     private final List<String> tableTypes;
     private final boolean statisticsEnabled;
     private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
@@ -300,6 +308,7 @@ public class PostgreSqlClient
         this.jsonType = typeManager.getType(new TypeSignature(JSON));
         this.uuidType = typeManager.getType(new TypeSignature(StandardTypes.UUID));
         this.varcharMapType = (MapType) typeManager.getType(mapType(VARCHAR.getTypeSignature(), VARCHAR.getTypeSignature()));
+        this.geometryType = typeManager.getType(new TypeSignature(StandardTypes.GEOMETRY));
 
         ImmutableList.Builder<String> tableTypes = ImmutableList.builder();
         tableTypes.add("TABLE", "PARTITIONED TABLE", "VIEW", "MATERIALIZED VIEW", "FOREIGN TABLE");
@@ -575,6 +584,8 @@ public class PostgreSqlClient
                 return Optional.of(hstoreColumnMapping(session));
             case "vector":
                 return Optional.of(vectorColumnMapping());
+            case "geometry":
+                return Optional.of(geometryColumnMapping());
         }
         if (jdbcTypeName.endsWith("\"vector\"")) {
             // TODO: Find more reliable way to detect vector type. The type name can be "schema-name"."vector"
@@ -912,6 +923,12 @@ public class PostgreSqlClient
     }
 
     @Override
+    public boolean supportsMerge()
+    {
+        return true;
+    }
+
+    @Override
     public OptionalLong delete(ConnectorSession session, JdbcTableHandle handle)
     {
         checkArgument(handle.isNamedRelation(), "Unable to delete from synthetic table: %s", handle);
@@ -1177,6 +1194,32 @@ public class PostgreSqlClient
         // PostgreSQL driver caches the max column name length in a DatabaseMetaData object. The cost to call this method per column is low.
         if (columnName.length() > databaseMetadata.getMaxColumnNameLength()) {
             throw new TrinoException(NOT_SUPPORTED, format("Column name must be shorter than or equal to '%s' characters but got '%s': '%s'", databaseMetadata.getMaxColumnNameLength(), columnName.length(), columnName));
+        }
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, RemoteTableName remoteTableName)
+    {
+        List<JdbcColumnHandle> columns = getColumns(session, remoteTableName.getSchemaTableName(), remoteTableName);
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            DatabaseMetaData metaData = connection.getMetaData();
+
+            ResultSet primaryKeys = metaData.getPrimaryKeys(remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName());
+
+            Set<String> primaryKeyNames = new HashSet<>();
+            while (primaryKeys.next()) {
+                String columnName = primaryKeys.getString("COLUMN_NAME");
+                primaryKeyNames.add(columnName);
+            }
+            if (primaryKeyNames.isEmpty()) {
+                return ImmutableList.of();
+            }
+            return columns.stream()
+                    .filter(column -> primaryKeyNames.contains(column.getColumnName()))
+                    .collect(toImmutableList());
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
         }
     }
 
@@ -1621,6 +1664,39 @@ public class PostgreSqlClient
         return ObjectWriteFunction.of(Block.class, (_, _, _) -> {
             throw new TrinoException(NOT_SUPPORTED, "Writing to vector type is unsupported");
         });
+    }
+
+    private ColumnMapping geometryColumnMapping()
+    {
+        return ColumnMapping.sliceMapping(
+                geometryType,
+                (resultSet, columnIndex) -> {
+                    String hexWkb = resultSet.getString(columnIndex);
+                    byte[] wkb = HexFormat.of().parseHex(hexWkb);
+                    return stGeomFromBinary(wrappedBuffer(wkb));
+                },
+                geometryWriteFunction(),
+                DISABLE_PUSHDOWN);
+    }
+
+    private static SliceWriteFunction geometryWriteFunction()
+    {
+        return new SliceWriteFunction()
+        {
+            @Override
+            public String getBindExpression()
+            {
+                return "ST_GeomFromWKB(?)";
+            }
+
+            @Override
+            public void set(PreparedStatement statement, int index, Slice slice)
+                    throws SQLException
+            {
+                byte[] bytes = stAsBinary(slice).getBytes();
+                statement.setBytes(index, bytes);
+            }
+        };
     }
 
     private static class StatisticsDao

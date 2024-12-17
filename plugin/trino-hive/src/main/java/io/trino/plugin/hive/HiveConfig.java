@@ -132,7 +132,7 @@ public class HiveConfig
     private boolean sortedWritingEnabled = true;
     private boolean propagateTableScanSortingProperties;
 
-    private boolean optimizeMismatchedBucketCount;
+    private boolean optimizeMismatchedBucketCount = true;
     private boolean writesToNonManagedTablesEnabled;
     private boolean createsOfNonManagedTablesEnabled = true;
 
@@ -181,6 +181,8 @@ public class HiveConfig
     private boolean partitionProjectionEnabled;
 
     private S3StorageClassFilter s3StorageClassFilter = S3StorageClassFilter.READ_ALL;
+
+    private int metadataParallelism = 8;
 
     public boolean isSingleStatementWritesOnly()
     {
@@ -923,7 +925,7 @@ public class HiveConfig
     }
 
     @Config("hive.bucket-execution")
-    @ConfigDescription("Enable bucket-aware execution: only use a single worker per bucket")
+    @ConfigDescription("Enable bucket-aware execution: use physical bucketing information to optimize queries")
     public HiveConfig setBucketExecutionEnabled(boolean bucketExecutionEnabled)
     {
         this.bucketExecutionEnabled = bucketExecutionEnabled;
@@ -1284,6 +1286,20 @@ public class HiveConfig
     public HiveConfig setS3StorageClassFilter(S3StorageClassFilter s3StorageClassFilter)
     {
         this.s3StorageClassFilter = s3StorageClassFilter;
+        return this;
+    }
+
+    @Min(1)
+    public int getMetadataParallelism()
+    {
+        return metadataParallelism;
+    }
+
+    @ConfigDescription("Limits metadata enumeration calls parallelism")
+    @Config("hive.metadata.parallelism")
+    public HiveConfig setMetadataParallelism(int metadataParallelism)
+    {
+        this.metadataParallelism = metadataParallelism;
         return this;
     }
 }

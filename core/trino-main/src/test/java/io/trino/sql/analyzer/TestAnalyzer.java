@@ -1691,6 +1691,24 @@ public class TestAnalyzer
     }
 
     @Test
+    public void testOrderByOnlySupportedForAggregateWindowFunctions()
+    {
+        analyze("SELECT array_agg(a ORDER BY b) OVER () FROM t1");
+        assertFails("SELECT first_value(a ORDER  BY b) OVER () FROM t1")
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessage("line 1:8: Only aggregation window functions with ORDER BY are supported");
+    }
+
+    @Test
+    public void testDistinctOnlySupportedForAggregateWindowFunctions()
+    {
+        analyze("SELECT array_agg(DISTINCT a) OVER () FROM t1");
+        assertFails("SELECT first_value(DISTINCT a) OVER () FROM t1")
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessageStartingWith("line 1:1: Only aggregation window functions with DISTINCT are supported");
+    }
+
+    @Test
     public void testWindowFrameTypeRows()
     {
         assertFails("SELECT array_agg(x) OVER (ROWS UNBOUNDED FOLLOWING) FROM (VALUES 1) t(x)")
@@ -2257,13 +2275,6 @@ public class TestAnalyzer
                 "                           )")
                 .hasErrorCode(INVALID_WINDOW_MEASURE)
                 .hasMessage("line 1:8: Measure last_z is not defined in the corresponding window");
-    }
-
-    @Test
-    public void testDistinctInWindowFunctionParameter()
-    {
-        assertFails("SELECT a, count(DISTINCT b) OVER () FROM t1")
-                .hasErrorCode(NOT_SUPPORTED);
     }
 
     @Test
@@ -6421,12 +6432,12 @@ public class TestAnalyzer
 
         analyze("SELECT * FROM TABLE(system.table_argument_function(input => TABLE(t1) ORDER BY \"a\"))");
 
-        // TODO Fix failure when partitioning by a nested field
+        // table function arguments can only be partitioned by their top-level fields
         assertFails("SELECT * FROM TABLE(system.table_argument_function(input => TABLE(SELECT CAST(ROW(1) AS ROW(x BIGINT)) a) PARTITION BY a.x))")
                 .hasErrorCode(COLUMN_NOT_FOUND)
                 .hasMessage("line 1:120: Column a.x is not present in the input relation");
 
-        // TODO Fix failure when ordering by a nested field
+        // table function arguments can only be partitioned by their top-level fields
         assertFails("SELECT * FROM TABLE(system.table_argument_function(input => TABLE(SELECT CAST(ROW(1) AS ROW(x BIGINT)) a) ORDER BY a.x))")
                 .hasErrorCode(COLUMN_NOT_FOUND)
                 .hasMessage("line 1:116: Column a.x is not present in the input relation");

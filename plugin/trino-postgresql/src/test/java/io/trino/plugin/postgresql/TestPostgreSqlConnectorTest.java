@@ -62,6 +62,7 @@ import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.plugin.jdbc.JdbcWriteSessionProperties.NON_TRANSACTIONAL_MERGE;
 import static io.trino.plugin.postgresql.PostgreSqlConfig.ArrayMapping.AS_ARRAY;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -107,6 +108,15 @@ public class TestPostgreSqlConnectorTest
                 .build();
     }
 
+    @Override
+    protected Session getSession()
+    {
+        Session session = super.getSession();
+        return Session.builder(session)
+                .setCatalogSessionProperty(session.getCatalog().orElseThrow(), NON_TRANSACTIONAL_MERGE, "true")
+                .build();
+    }
+
     @BeforeAll
     public void setExtensions()
     {
@@ -127,11 +137,14 @@ public class TestPostgreSqlConnectorTest
             case SUPPORTS_CANCELLATION,
                     SUPPORTS_JOIN_PUSHDOWN,
                     SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                    SUPPORTS_MERGE,
+                    SUPPORTS_ROW_LEVEL_UPDATE,
                     SUPPORTS_TOPN_PUSHDOWN,
                     SUPPORTS_TOPN_PUSHDOWN_WITH_VARCHAR -> true;
             case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
                     SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
                     SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                    SUPPORTS_MAP_TYPE,
                     SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
                     SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
                     SUPPORTS_ROW_TYPE -> false;
@@ -1296,6 +1309,23 @@ public class TestPostgreSqlConnectorTest
         }
     }
 
+    @Test
+    public void testMergeTargetWithNoPrimaryKeys()
+    {
+        String tableName = "test_merge_target_no_pks_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " (a int, b int)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES(1, 1), (2, 2)", 2);
+
+        assertQueryFails(format("DELETE FROM %s WHERE a IS NOT NULL AND abs(a + b) > 10", tableName), "The connector can not perform merge on the target table without primary keys");
+        assertQueryFails(format("UPDATE %s SET a = a+b WHERE a IS NOT NULL AND (a + b) > 10", tableName), "The connector can not perform merge on the target table without primary keys");
+        assertQueryFails(format("MERGE INTO %s t USING (VALUES (3, 3)) AS s(x, y) " +
+                "   ON t.a = s.x " +
+                "   WHEN MATCHED THEN UPDATE SET b = y " +
+                "   WHEN NOT MATCHED THEN INSERT (a, b) VALUES (s.x, s.y) ", tableName), "The connector can not perform merge on the target table without primary keys");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
     private String getLongInClause(int start, int length)
     {
         String longValues = range(start, start + length)
@@ -1405,5 +1435,30 @@ public class TestPostgreSqlConnectorTest
         }
 
         return Optional.of(setup);
+    }
+
+    @Override
+    protected void createTableForWrites(String createTable, String tableName, Optional<String> primaryKey, OptionalInt updateCount)
+    {
+        super.createTableForWrites(createTable, tableName, primaryKey, updateCount);
+        primaryKey.ifPresent(key -> onRemoteDatabase().execute(format("ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)", tableName, "pk_" + tableName, key)));
+    }
+
+    @Override
+    protected TestTable createTestTableForWrites(String namePrefix, String tableDefinition, String primaryKey)
+    {
+        TestTable testTable = super.createTestTableForWrites(namePrefix, tableDefinition, primaryKey);
+        String tableName = testTable.getName();
+        onRemoteDatabase().execute(format("ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)", tableName, "pk_" + tableName, primaryKey));
+        return testTable;
+    }
+
+    @Override
+    protected TestTable createTestTableForWrites(String namePrefix, String tableDefinition, List<String> rowsToInsert, String primaryKey)
+    {
+        TestTable testTable = super.createTestTableForWrites(namePrefix, tableDefinition, rowsToInsert, primaryKey);
+        String tableName = testTable.getName();
+        onRemoteDatabase().execute(format("ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s)", tableName, "pk_" + tableName, primaryKey));
+        return testTable;
     }
 }

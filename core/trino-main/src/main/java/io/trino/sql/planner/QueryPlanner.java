@@ -174,6 +174,7 @@ import static io.trino.sql.tree.WindowFrame.Type.ROWS;
 import static io.trino.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
 import static io.trino.type.IntervalYearMonthType.INTERVAL_YEAR_MONTH;
 import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
 class QueryPlanner
@@ -314,7 +315,7 @@ class QueryPlanner
         NodeAndMappings checkConvergenceStep = copy(recursionStep, mappings);
         Symbol countSymbol = symbolAllocator.newSymbol("count", BIGINT);
         ResolvedFunction function = plannerContext.getMetadata().resolveBuiltinFunction("count", ImmutableList.of());
-        WindowNode.Function countFunction = new WindowNode.Function(function, ImmutableList.of(), DEFAULT_FRAME, false);
+        WindowNode.Function countFunction = new WindowNode.Function(function, ImmutableList.of(), Optional.empty(), DEFAULT_FRAME, false, false);
 
         WindowNode windowNode = new WindowNode(
                 idAllocator.getNextId(),
@@ -552,6 +553,8 @@ class QueryPlanner
         List<Symbol> columnSymbols = columnSymbolsBuilder.build();
         Symbol operationSymbol = symbolAllocator.newSymbol("operation", TINYINT);
         assignmentsBuilder.put(operationSymbol, new Constant(TINYINT, (long) DELETE_OPERATION_NUMBER));
+        Symbol caseNumberSymbol = symbolAllocator.newSymbol("case_number", INTEGER);
+        assignmentsBuilder.put(caseNumberSymbol, new Constant(INTEGER, 0L));
         Symbol projectedRowIdSymbol = symbolAllocator.newSymbol(rowIdSymbol.name(), rowIdType);
         assignmentsBuilder.put(projectedRowIdSymbol, rowIdSymbol.toSymbolReference());
         assignmentsBuilder.put(symbolAllocator.newSymbol("insert_from_update", TINYINT), new Constant(TINYINT, 0L));
@@ -574,7 +577,8 @@ class QueryPlanner
                         Optional.empty(),
                         tableMetadata.table(),
                         paradigmAndTypes,
-                        findSourceTableHandles(projectNode)),
+                        findSourceTableHandles(projectNode),
+                        ImmutableListMultimap.of()),
                 projectNode.getOutputSymbols(),
                 partitioningScheme,
                 outputs);
@@ -597,7 +601,7 @@ class QueryPlanner
 
         io.trino.sql.tree.Expression[] orderedColumnValuesArray = new io.trino.sql.tree.Expression[updatedColumnHandles.size()];
         node.getAssignments().forEach(assignment -> {
-            String name = assignment.getName().getValue();
+            String name = assignment.getName().getValue().toLowerCase(ENGLISH);
             ColumnHandle handle = nameToHandle.get(name);
             int index = updatedColumnHandles.indexOf(handle);
             if (index >= 0) {
@@ -942,7 +946,8 @@ class QueryPlanner
                 Optional.empty(),
                 metadata.getTableName(session, handle).getSchemaTableName(),
                 mergeParadigmAndTypes,
-                findSourceTableHandles(planNode));
+                findSourceTableHandles(planNode),
+                mergeAnalysis.getUpdateCaseColumnHandles());
 
         ImmutableList.Builder<Symbol> columnSymbolsBuilder = ImmutableList.builder();
         for (ColumnHandle columnHandle : mergeAnalysis.getDataColumnHandles()) {
@@ -957,11 +962,13 @@ class QueryPlanner
         }
 
         Symbol operationSymbol = symbolAllocator.newSymbol("operation", TINYINT);
+        Symbol caseNumberSymbol = symbolAllocator.newSymbol("case_number", INTEGER);
         Symbol insertFromUpdateSymbol = symbolAllocator.newSymbol("insert_from_update", TINYINT);
 
         List<Symbol> projectedSymbols = ImmutableList.<Symbol>builder()
                 .addAll(columnSymbols)
                 .add(operationSymbol)
+                .add(caseNumberSymbol)
                 .add(rowIdSymbol)
                 .add(insertFromUpdateSymbol)
                 .build();
@@ -1457,6 +1464,9 @@ class QueryPlanner
                 inputsBuilder.addAll(windowFunction.getArguments().stream()
                                 .filter(argument -> !(argument instanceof LambdaExpression)) // lambda expression is generated at execution time
                                 .collect(Collectors.toList()));
+                inputsBuilder.addAll(getSortItemsFromOrderBy(windowFunction.getOrderBy()).stream()
+                        .map(SortItem::getSortKey)
+                        .iterator());
             }
 
             List<io.trino.sql.tree.Expression> inputs = inputsBuilder.build();
@@ -1778,8 +1788,10 @@ class QueryPlanner
                                 return coercions.get(argument).toSymbolReference();
                             })
                             .collect(toImmutableList()),
+                    windowFunction.getOrderBy().map(orderBy -> translateOrderingScheme(orderBy.getSortItems(), coercions::get)),
                     frame,
-                    nullTreatment == NullTreatment.IGNORE);
+                    nullTreatment == NullTreatment.IGNORE,
+                    windowFunction.isDistinct());
 
             functions.put(newSymbol, function);
             mappings.put(scopeAwareKey(windowFunction, analysis, subPlan.getScope()), newSymbol);
@@ -1859,8 +1871,10 @@ class QueryPlanner
                                 return coercions.get(argument).toSymbolReference();
                             })
                             .collect(toImmutableList()),
+                    Optional.empty(),
                     baseFrame,
-                    nullTreatment == NullTreatment.IGNORE);
+                    nullTreatment == NullTreatment.IGNORE,
+                    false);
 
             functions.put(newSymbol, function);
             mappings.put(scopeAwareKey(windowFunction, analysis, subPlan.getScope()), newSymbol);

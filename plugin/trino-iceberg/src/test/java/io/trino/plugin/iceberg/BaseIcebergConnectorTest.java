@@ -42,8 +42,11 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.sql.planner.Plan;
+import io.trino.sql.planner.plan.ExchangeNode;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.OutputNode;
+import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.DistributedQueryRunner;
@@ -91,6 +94,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
@@ -113,6 +117,7 @@ import static io.trino.plugin.iceberg.IcebergFileFormat.AVRO;
 import static io.trino.plugin.iceberg.IcebergFileFormat.ORC;
 import static io.trino.plugin.iceberg.IcebergFileFormat.PARQUET;
 import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
+import static io.trino.plugin.iceberg.IcebergSessionProperties.BUCKET_EXECUTION_ENABLED;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.COLLECT_EXTENDED_STATISTICS_ON_WRITE;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.DYNAMIC_FILTERING_WAIT_TIMEOUT;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.EXTENDED_STATISTICS_ENABLED;
@@ -120,6 +125,7 @@ import static io.trino.plugin.iceberg.IcebergSplitManager.ICEBERG_DOMAIN_COMPACT
 import static io.trino.plugin.iceberg.IcebergTestUtils.getFileSystemFactory;
 import static io.trino.plugin.iceberg.IcebergTestUtils.withSmallRowGroups;
 import static io.trino.plugin.iceberg.IcebergUtil.TRINO_QUERY_ID_NAME;
+import static io.trino.plugin.iceberg.IcebergUtil.TRINO_USER_NAME;
 import static io.trino.plugin.iceberg.IcebergUtil.getLatestMetadataLocation;
 import static io.trino.spi.predicate.Domain.multipleValues;
 import static io.trino.spi.predicate.Domain.singleValue;
@@ -131,6 +137,7 @@ import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
 import static io.trino.spi.type.TimeZoneKey.getTimeZoneKey;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
+import static io.trino.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.trino.testing.TestingConnectorSession.SESSION;
@@ -1062,7 +1069,7 @@ public abstract class BaseIcebergConnectorTest
                 "\\QUnable to parse partitioning value: Cannot partition by non-primitive source field: struct<3: child: optional string>");
         assertQueryFails(
                 "CREATE TABLE test_partitioned_table_nested_field_inside_array (parent ARRAY(ROW(child VARCHAR))) WITH (partitioning = ARRAY['\"parent.child\"'])",
-                "\\QPartitioning field [parent.child] cannot be contained in a array");
+                "\\QPartitioning field [parent.element.child] cannot be contained in a array");
         assertQueryFails(
                 "CREATE TABLE test_partitioned_table_nested_field_inside_map (parent MAP(ROW(child INTEGER), ARRAY(VARCHAR))) WITH (partitioning = ARRAY['\"parent.key.child\"'])",
                 "\\QPartitioning field [parent.key.child] cannot be contained in a map");
@@ -7378,17 +7385,17 @@ public abstract class BaseIcebergConnectorTest
         String tableName = "test_snapshot_query_ids_v1" + randomNameSuffix();
 
         // Create empty table
-        assertQueryIdStored(tableName, executeWithQueryId(format("CREATE TABLE %s (a bigint, b bigint) WITH (format_version = 1, partitioning = ARRAY['a'])", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("CREATE TABLE %s (a bigint, b bigint) WITH (format_version = 1, partitioning = ARRAY['a'])", tableName)));
 
         // Insert some records, creating 3 partitions
-        assertQueryIdStored(tableName, executeWithQueryId(format("INSERT INTO %s VALUES (1, 100), (2, 300), (2, 350), (3, 250)", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("INSERT INTO %s VALUES (1, 100), (2, 300), (2, 350), (3, 250)", tableName)));
 
         // Delete whole partition
-        assertQueryIdStored(tableName, executeWithQueryId(format("DELETE FROM %s WHERE a = 2", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("DELETE FROM %s WHERE a = 2", tableName)));
 
         // Insert some more and then optimize
-        assertQueryIdStored(tableName, executeWithQueryId(format("INSERT INTO %s VALUES (1, 400)", tableName)));
-        assertQueryIdStored(tableName, executeWithQueryId(format("ALTER TABLE %s EXECUTE OPTIMIZE", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("INSERT INTO %s VALUES (1, 400)", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("ALTER TABLE %s EXECUTE OPTIMIZE", tableName)));
     }
 
     @Test
@@ -7400,23 +7407,23 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate(format("INSERT INTO %s VALUES (1, 1), (1, 4), (1, 20), (2, 2)", sourceTableName), 4);
 
         // Create table with CTAS
-        assertQueryIdStored(tableName, executeWithQueryId(format("CREATE TABLE %s WITH (format_version = 2, partitioning = ARRAY['a']) " +
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("CREATE TABLE %s WITH (format_version = 2, partitioning = ARRAY['a']) " +
                 "AS SELECT * FROM %s", tableName, sourceTableName)));
 
         // Insert records
-        assertQueryIdStored(tableName, executeWithQueryId(format("INSERT INTO %s VALUES (1, 100), (2, 300), (3, 250)", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("INSERT INTO %s VALUES (1, 100), (2, 300), (3, 250)", tableName)));
 
         // Delete a whole partition
-        assertQueryIdStored(tableName, executeWithQueryId(format("DELETE FROM %s WHERE a = 2", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("DELETE FROM %s WHERE a = 2", tableName)));
 
         // Delete an individual row
-        assertQueryIdStored(tableName, executeWithQueryId(format("DELETE FROM %s WHERE a = 1 AND b = 4", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("DELETE FROM %s WHERE a = 1 AND b = 4", tableName)));
 
         // Update an individual row
-        assertQueryIdStored(tableName, executeWithQueryId(format("UPDATE %s SET b = 900 WHERE a = 1 AND b = 1", tableName)));
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("UPDATE %s SET b = 900 WHERE a = 1 AND b = 1", tableName)));
 
         // Merge
-        assertQueryIdStored(tableName, executeWithQueryId(format("MERGE INTO %s t USING %s s ON t.a = s.a AND t.b = s.b " +
+        assertQueryIdAndUserStored(tableName, executeWithQueryId(format("MERGE INTO %s t USING %s s ON t.a = s.a AND t.b = s.b " +
                 "WHEN MATCHED THEN UPDATE SET b = t.b * 50", tableName, sourceTableName)));
     }
 
@@ -7475,8 +7482,6 @@ public abstract class BaseIcebergConnectorTest
                 "The following properties cannot be updated: location, orc_bloom_filter_fpp");
         assertQueryFails("ALTER TABLE " + tableName + " SET PROPERTIES format = 'ORC', orc_bloom_filter_columns = ARRAY['a']",
                 "The following properties cannot be updated: orc_bloom_filter_columns");
-        assertQueryFails("ALTER TABLE " + tableName + " SET PROPERTIES extra_properties = MAP(ARRAY['extra.property.one'], ARRAY['foo'])",
-                "The following properties cannot be updated: extra_properties");
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -7631,6 +7636,8 @@ public abstract class BaseIcebergConnectorTest
         assertQueryFails("SELECT 1 FROM " + tableName + " WHERE false", "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("SHOW CREATE TABLE " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("CREATE TABLE a_new_table (LIKE " + tableName + " EXCLUDING PROPERTIES)", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("CREATE OR REPLACE TABLE " + tableName + " (id INT, country VARCHAR, independence ROW(month VARCHAR, year INT))", "Metadata not found in metadata location for table " + schemaTableName);
+        assertQueryFails("CREATE OR REPLACE TABLE " + tableName + " AS SELECT 1 x, 'IRELAND' y", "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("DESCRIBE " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("SHOW COLUMNS FROM " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
         assertQueryFails("SHOW STATS FOR " + tableName, "Metadata not found in metadata location for table " + schemaTableName);
@@ -7811,18 +7818,11 @@ public abstract class BaseIcebergConnectorTest
     public void testTableChangesFunctionInvalidArguments()
     {
         assertQueryFails(
-                "SELECT * FROM TABLE(system.table_changes(\"SCHEMA\" => CURRENT_SCHEMA, \"SCHEMA_NAME\" => CURRENT_SCHEMA, \"TABLE\" => 'region', START_SNAPSHOT_ID => 1, END_SNAPSHOT_ID => 2))",
-                "Cannot use both SCHEMA and SCHEMA_NAME arguments");
-        assertQueryFails(
-                "SELECT * FROM TABLE(system.table_changes(\"SCHEMA\" => CURRENT_SCHEMA, \"TABLE\" => 'region', \"TABLE_NAME\" => 'region', START_SNAPSHOT_ID => 1, END_SNAPSHOT_ID => 2))",
-                "Cannot use both TABLE and TABLE_NAME arguments");
-
-        assertQueryFails(
                 "SELECT * FROM TABLE(system.table_changes(start_snapshot_id => 1, end_snapshot_id => 2))",
-                "SCHEMA_NAME argument not found");
+                ".*: Missing argument: SCHEMA_NAME");
         assertQueryFails(
                 "SELECT * FROM TABLE(system.table_changes(schema_name => 'tpch', start_snapshot_id => 1, end_snapshot_id => 2))",
-                "TABLE_NAME argument not found");
+                ".* Missing argument: TABLE_NAME");
     }
 
     @Test
@@ -7863,6 +7863,68 @@ public abstract class BaseIcebergConnectorTest
         String query = "SELECT id FROM " + tableName + " WHERE ds = 'a'";
         assertQuery(session, query, "VALUES 1");
         assertUpdate(session, "DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testBucketedSelect()
+    {
+        try {
+            // table is partitioned on (key1), (key2), or (key1, key2)
+            assertUpdate(
+                    "CREATE TABLE test_bucketed_select WITH (partitioning = ARRAY['bucket(key1, 13)', 'bucket(key2, 17)']) AS SELECT orderkey key1, custkey key2, comment value1 FROM orders",
+                    15000);
+            Session planWithTableNodePartitioning = Session.builder(getSession())
+                    .setCatalogSessionProperty("iceberg", BUCKET_EXECUTION_ENABLED, "true")
+                    .build();
+            Session planWithoutTableNodePartitioning = Session.builder(getSession())
+                    .setCatalogSessionProperty("iceberg", BUCKET_EXECUTION_ENABLED, "false")
+                    .build();
+
+            // a basic scan should not use a partitioned read as it is not helpful to the query
+            @Language("SQL") String query = "SELECT value1 FROM test_bucketed_select WHERE key1 < 10";
+            @Language("SQL") String expectedQuery = "SELECT comment FROM orders WHERE orderkey < 10";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertNoReadPartitioning("key1", "key2"));
+
+            // aggregation on key1, key2, or (key1, key2) should not require a remote exchange
+            query = "SELECT count(value1) FROM test_bucketed_select GROUP BY key1";
+            expectedQuery = "SELECT count(comment) FROM orders GROUP BY orderkey";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(0));
+            assertQuery(planWithoutTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(1));
+
+            query = "SELECT count(value1) FROM test_bucketed_select GROUP BY key2";
+            expectedQuery = "SELECT count(comment) FROM orders GROUP BY custkey";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(0));
+            assertQuery(planWithoutTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(1));
+
+            query = "SELECT count(value1) FROM test_bucketed_select GROUP BY key2, key1";
+            expectedQuery = "SELECT count(comment) FROM orders GROUP BY custkey, orderkey";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(0));
+            assertQuery(planWithoutTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(1));
+
+            // join on key1, key2, or (key1, key2) should not require a remote exchange
+            query = "SELECT key1 FROM test_bucketed_select JOIN test_bucketed_select USING (key1)";
+            expectedQuery = "SELECT a.orderkey FROM orders a JOIN orders USING (orderkey)";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(0));
+            assertQuery(planWithoutTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(2));
+
+            query = "SELECT key2 FROM test_bucketed_select JOIN test_bucketed_select USING (key2)";
+            expectedQuery = "SELECT a.custkey FROM orders a JOIN orders USING (custkey)";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(0));
+            assertQuery(planWithoutTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(2));
+
+            query = "SELECT key2, key1 FROM test_bucketed_select JOIN test_bucketed_select USING (key2, key1)";
+            expectedQuery = "SELECT a.custkey, a.orderkey FROM orders a JOIN orders USING (custkey, orderkey)";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(0));
+            assertQuery(planWithoutTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(2));
+
+            query = "SELECT a.key2, b.key1 FROM test_bucketed_select a JOIN test_bucketed_select b on a.key1 = b.key2";
+            expectedQuery = "SELECT a.custkey, b.orderkey FROM orders a JOIN orders b on a.orderkey = b.custkey";
+            assertQuery(planWithTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(1));
+            assertQuery(planWithoutTableNodePartitioning, query, expectedQuery, assertRemoteExchangesCount(2));
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS test_bucketed_select");
+        }
     }
 
     @Test
@@ -8161,7 +8223,7 @@ public abstract class BaseIcebergConnectorTest
     @Override
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessageMatching("Table name must be shorter than or equal to '128' characters but got .*");
+        assertThat(e).hasMessageMatching(".*Table name must be shorter than or equal to '128' characters but got .*");
     }
 
     @Test
@@ -8439,6 +8501,11 @@ public abstract class BaseIcebergConnectorTest
                 .skippingTypesCheck()
                 .matches("VALUES ('extra.property.one', 'one'), ('extra.property.two', 'two')");
 
+        assertUpdate("ALTER TABLE " + tableName + " SET PROPERTIES extra_properties = MAP(ARRAY['extra.property.one'], ARRAY['updated'])");
+        assertThat(query("SELECT key, value FROM \"" + tableName + "$properties\" WHERE key IN ('extra.property.one', 'extra.property.two')"))
+                .skippingTypesCheck()
+                .matches("VALUES ('extra.property.one', 'updated'), ('extra.property.two', 'two')");
+
         assertUpdate("DROP TABLE " + tableName);
     }
 
@@ -8515,6 +8582,107 @@ public abstract class BaseIcebergConnectorTest
         assertQueryFails(
                 "CREATE TABLE test_create_table_with_as_illegal_extra_properties WITH (extra_properties = MAP(ARRAY['not_allowed_property'], ARRAY['foo'])) AS SELECT 1 as c1",
                 "\\QIllegal keys in extra_properties: [not_allowed_property]");
+    }
+
+    @Test
+    public void testSetIllegalExtraPropertyKey()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_illegal_table_properties", "(x int)")) {
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " SET PROPERTIES extra_properties = MAP(ARRAY['sorted_by'], ARRAY['id'])",
+                    "\\QIllegal keys in extra_properties: [sorted_by]");
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " SET PROPERTIES extra_properties = MAP(ARRAY['comment'], ARRAY['some comment'])",
+                    "\\QIllegal keys in extra_properties: [comment]");
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " SET PROPERTIES extra_properties = MAP(ARRAY['not_allowed_property'], ARRAY['foo'])",
+                    "\\QIllegal keys in extra_properties: [not_allowed_property]");
+        }
+    }
+
+    @Test // regression test for https://github.com/trinodb/trino/issues/22922
+    void testArrayElementChange()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_array_schema_change",
+                "(col array(row(a varchar, b varchar)))",
+                List.of("CAST(array[row('a', 'b')] AS array(row(a varchar, b varchar)))"))) {
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.a");
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.c varchar");
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.b");
+
+            String expected = format == ORC ? "CAST(array[row(NULL)] AS array(row(c varchar)))" : "CAST(NULL AS array(row(c varchar)))";
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .matches("VALUES " + expected);
+        }
+    }
+
+    // MAP type is tested in TestIcebergV2.testMapValueSchemaChange
+
+    @Test
+    void testRowFieldChange()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_row_schema_change",
+                "(col row(a varchar, b varchar))")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT CAST(row('a', 'b') AS row(a varchar, b varchar))", 1);
+
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.a");
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.c varchar");
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.b");
+
+            String expected = format == ORC || format == AVRO ? "CAST(row(NULL) AS row(c varchar))" : "CAST(NULL AS row(c varchar))";
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .matches("SELECT " + expected);
+        }
+    }
+
+    @Test
+    public void testObjectStoreLayoutEnabledAndDataLocation()
+            throws Exception
+    {
+        String tableName = "test_object_store_layout_enabled_data_location" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " WITH (object_store_layout_enabled = true, data_location = 'local:///data-location/xyz') AS SELECT 1 AS val", 1);
+
+        Location tableLocation = Location.of(getTableLocation(tableName));
+        assertThat(fileSystem.directoryExists(tableLocation).get()).isTrue();
+
+        String filePath = (String) computeScalar("SELECT file_path FROM \"" + tableName + "$files\"");
+        Location dataFileLocation = Location.of(filePath);
+        assertThat(fileSystem.newInputFile(dataFileLocation).exists()).isTrue();
+        assertThat(filePath).matches("local:///data-location/xyz/.{6}/tpch/%s.*".formatted(tableName));
+
+        assertUpdate("DROP TABLE " + tableName);
+        assertThat(fileSystem.newInputFile(dataFileLocation).exists()).isFalse();
+        assertThat(fileSystem.newInputFile(tableLocation).exists()).isFalse();
+    }
+
+    @Test
+    public void testCreateTableWithDataLocationButObjectStoreLayoutDisabled()
+    {
+        assertQueryFails(
+                "CREATE TABLE test_data_location WITH (data_location = 'local:///data-location/xyz') AS SELECT 1 AS val",
+                "Data location can only be set when object store layout is enabled");
+    }
+
+    @Test
+    @Override
+    public void testSetFieldMapKeyType()
+    {
+        // Iceberg doesn't support change a map 'key' column. Only map values can be changed.
+        assertThatThrownBy(super::testSetFieldMapKeyType)
+                .hasMessageContaining("Failed to set field type: Cannot alter map keys");
+    }
+
+    @Test
+    @Override
+    public void testSetNestedFieldMapKeyType()
+    {
+        // Iceberg doesn't support change a map 'key' column. Only map values can be changed.
+        assertThatThrownBy(super::testSetNestedFieldMapKeyType)
+                .hasMessageContaining("Failed to set field type: Cannot alter map keys");
     }
 
     @Override
@@ -8731,9 +8899,41 @@ public abstract class BaseIcebergConnectorTest
                 .queryId();
     }
 
-    private void assertQueryIdStored(String tableName, QueryId queryId)
+    private void assertQueryIdAndUserStored(String tableName, QueryId queryId)
     {
         assertThat(getFieldFromLatestSnapshotSummary(tableName, TRINO_QUERY_ID_NAME))
                 .isEqualTo(queryId.toString());
+        assertThat(getFieldFromLatestSnapshotSummary(tableName, TRINO_USER_NAME))
+                .isEqualTo("user");
+    }
+
+    private Consumer<Plan> assertRemoteExchangesCount(int expectedRemoteExchangesCount)
+    {
+        return plan -> {
+            int actualRemoteExchangesCount = searchFrom(plan.getRoot())
+                    .where(node -> node instanceof ExchangeNode && ((ExchangeNode) node).getScope() == ExchangeNode.Scope.REMOTE)
+                    .count();
+            assertThat(actualRemoteExchangesCount).isEqualTo(expectedRemoteExchangesCount);
+        };
+    }
+
+    private Consumer<Plan> assertNoReadPartitioning(String... columnNames)
+    {
+        return plan -> {
+            List<TableScanNode> tableScanNodes = searchFrom(plan.getRoot()).where(node -> node instanceof TableScanNode)
+                    .findAll().stream()
+                    .map(TableScanNode.class::cast)
+                    .collect(toImmutableList());
+            for (TableScanNode tableScanNode : tableScanNodes) {
+                assertThat(tableScanNode.getUseConnectorNodePartitioning().orElseThrow()).isFalse();
+                IcebergTableHandle connectorTableHandle = (IcebergTableHandle) tableScanNode.getTable().connectorHandle();
+                assertThat(connectorTableHandle.getTablePartitioning()).isPresent();
+                // iceberg table should have partitioning for the columns but should not be active
+                IcebergTablePartitioning tablePartitioning = connectorTableHandle.getTablePartitioning().orElseThrow();
+                Set<String> actualPartitionColumns = tablePartitioning.partitioningColumns().stream().map(IcebergColumnHandle::getName).collect(Collectors.toSet());
+                assertThat(actualPartitionColumns).containsExactlyInAnyOrder(columnNames);
+                assertThat(tablePartitioning.active()).isFalse();
+            }
+        };
     }
 }

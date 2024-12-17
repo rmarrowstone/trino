@@ -30,8 +30,8 @@ public final class SpooledSegment
         extends Segment
 {
     private final URI dataUri;
-    private final Map<String, List<String>> headers;
     private final URI ackUri;
+    private final Map<String, List<String>> headers;
 
     @JsonCreator
     public SpooledSegment(

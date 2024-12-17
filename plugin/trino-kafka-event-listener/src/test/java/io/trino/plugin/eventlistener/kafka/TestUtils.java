@@ -44,7 +44,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
-import static java.time.Duration.ofMillis;
+import static java.time.Duration.ofSeconds;
 
 public final class TestUtils
 {
@@ -104,20 +104,20 @@ public final class TestUtils
                 Optional.empty());
 
         splitStatistics = new SplitStatistics(
-                ofMillis(1000),
-                ofMillis(2000),
-                ofMillis(3000),
-                ofMillis(4000),
+                ofSeconds(1),
+                ofSeconds(2),
+                ofSeconds(3),
+                ofSeconds(4),
                 1,
                 2,
                 Optional.of(Duration.ofMillis(100)),
                 Optional.of(Duration.ofMillis(200)));
 
         queryStatistics = new QueryStatistics(
-                ofMillis(1000),
-                ofMillis(1000),
-                ofMillis(1000),
-                ofMillis(1000),
+                ofSeconds(1),
+                ofSeconds(1),
+                ofSeconds(1),
+                ofSeconds(1),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
@@ -154,6 +154,7 @@ public final class TestUtils
                 true,
                 Collections.emptyList(),
                 List.of(new StageOutputBufferUtilization(0, 10, 0.1, 0.5, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 0.0, 1.0, Duration.ofSeconds(1234))),
+                Collections.emptyList(),
                 Collections.emptyList(),
                 Collections.emptyList(),
                 Collections.emptyList(),

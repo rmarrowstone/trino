@@ -29,9 +29,9 @@ import io.trino.parquet.metadata.BlockMetadata;
 import io.trino.parquet.metadata.ParquetMetadata;
 import io.trino.parquet.reader.MetadataReader;
 import io.trino.parquet.writer.ParquetWriterOptions;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.deltalake.delete.RoaringBitmapArray;
 import io.trino.plugin.deltalake.transactionlog.DeletionVectorEntry;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.ReaderPageSource;
 import io.trino.plugin.hive.parquet.ParquetFileWriter;
 import io.trino.plugin.hive.parquet.ParquetPageSourceFactory;
@@ -130,6 +130,7 @@ public class DeltaLakeMergeSink
     private final ParquetReaderOptions parquetReaderOptions;
     private final boolean deletionVectorEnabled;
     private final Map<String, DeletionVectorEntry> deletionVectors;
+    private final int randomPrefixLength;
 
     @Nullable
     private DeltaLakeCdfPageSink cdfPageSink;
@@ -153,7 +154,8 @@ public class DeltaLakeMergeSink
             ParquetReaderOptions parquetReaderOptions,
             FileFormatDataSourceStats fileFormatDataSourceStats,
             boolean deletionVectorEnabled,
-            Map<String, DeletionVectorEntry> deletionVectors)
+            Map<String, DeletionVectorEntry> deletionVectors,
+            int randomPrefixLength)
     {
         this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
         this.session = requireNonNull(session, "session is null");
@@ -181,13 +183,14 @@ public class DeltaLakeMergeSink
         this.parquetReaderOptions = requireNonNull(parquetReaderOptions, "parquetReaderOptions is null");
         this.deletionVectorEnabled = deletionVectorEnabled;
         this.deletionVectors = ImmutableMap.copyOf(requireNonNull(deletionVectors, "deletionVectors is null"));
+        this.randomPrefixLength = randomPrefixLength;
         dataColumnsIndices = new int[tableColumnCount];
         dataAndRowIdColumnsIndices = new int[tableColumnCount + 1];
         for (int i = 0; i < tableColumnCount; i++) {
             dataColumnsIndices[i] = i;
             dataAndRowIdColumnsIndices[i] = i;
         }
-        dataAndRowIdColumnsIndices[tableColumnCount] = tableColumnCount + 1; // row ID channel
+        dataAndRowIdColumnsIndices[tableColumnCount] = tableColumnCount + 2; // row ID channel
     }
 
     @Override
@@ -249,15 +252,15 @@ public class DeltaLakeMergeSink
     private DeltaLakeMergePage createPages(Page inputPage, int dataColumnCount)
     {
         int inputChannelCount = inputPage.getChannelCount();
-        if (inputChannelCount != dataColumnCount + 2) {
-            throw new IllegalArgumentException(format("inputPage channelCount (%s) == dataColumns size (%s) + 2", inputChannelCount, dataColumnCount));
+        if (inputChannelCount != dataColumnCount + 3) {
+            throw new IllegalArgumentException(format("inputPage channelCount (%s) == dataColumns size (%s) + 3", inputChannelCount, dataColumnCount));
         }
 
         int positionCount = inputPage.getPositionCount();
         if (positionCount <= 0) {
             throw new IllegalArgumentException("positionCount should be > 0, but is " + positionCount);
         }
-        Block operationBlock = inputPage.getBlock(inputChannelCount - 2);
+        Block operationBlock = inputPage.getBlock(inputChannelCount - 3);
         int[] deletePositions = new int[positionCount];
         int[] insertPositions = new int[positionCount];
         int[] updateInsertPositions = new int[positionCount];
@@ -408,7 +411,7 @@ public class DeltaLakeMergeSink
 
         DeletionVectorEntry deletionVectorEntry;
         try {
-            deletionVectorEntry = writeDeletionVectors(fileSystem, rootTableLocation, deletedRows);
+            deletionVectorEntry = writeDeletionVectors(fileSystem, rootTableLocation, deletedRows, randomPrefixLength);
         }
         catch (IOException e) {
             throw new TrinoException(DELTA_LAKE_BAD_WRITE, "Unable to write deletion vector file", e);

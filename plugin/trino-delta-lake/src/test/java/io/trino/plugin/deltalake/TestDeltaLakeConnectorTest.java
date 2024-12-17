@@ -60,6 +60,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Sets.union;
 import static io.trino.plugin.base.util.Closables.closeAllSuppress;
@@ -384,6 +385,7 @@ public class TestDeltaLakeConnectorTest
     @Test
     public void testCreateTableWithUnsupportedPartitionType()
     {
+        // Update TestDeltaLakeBasic.testPartitionValuesParsedCheckpoint() when the connector supports these types as partition columns
         String tableName = "test_create_table_unsupported_partition_types_" + randomNameSuffix();
         assertQueryFails(
                 "CREATE TABLE " + tableName + "(a INT, part ARRAY(INT)) WITH (partitioned_by = ARRAY['part'])",
@@ -394,6 +396,19 @@ public class TestDeltaLakeConnectorTest
         assertQueryFails(
                 "CREATE TABLE " + tableName + "(a INT, part ROW(field INT)) WITH (partitioned_by = ARRAY['part'])",
                 "Using array, map or row type on partitioned columns is unsupported");
+    }
+
+    @Test
+    public void testInsertIntoUnsupportedVarbinaryPartitionType()
+    {
+        // TODO https://github.com/trinodb/trino/issues/24155 Cannot insert varbinary values into partitioned columns
+        // Update TestDeltaLakeBasic.testPartitionValuesParsedCheckpoint() when fixing this issue
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_varbinary_partition",
+                "(x int, part varbinary) WITH (partitioned_by = ARRAY['part'])")) {
+            assertQueryFails("INSERT INTO " + table.getName() + " VALUES (1, X'01')", "Unsupported type for partition: varbinary");
+        }
     }
 
     @Test
@@ -1517,6 +1532,35 @@ public class TestDeltaLakeConnectorTest
     }
 
     @Test
+    void testCreateTableWithColumnMappingModeAndTimestampNtz()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_column_mapping", "(x int) WITH (column_mapping_mode = 'NAME')")) {
+            assertThat(query("SELECT * FROM \"" + table.getName() + "$properties\""))
+                    .skippingTypesCheck()
+                    .matches("VALUES " +
+                            "('delta.enableDeletionVectors', 'false')," +
+                            "('delta.columnMapping.mode', 'name')," +
+                            "('delta.columnMapping.maxColumnId', '1')," +
+                            "('delta.minReaderVersion', '2')," +
+                            "('delta.minWriterVersion', '5')");
+        }
+
+        // timestamp type requires reader version 3 and writer version 7
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_column_mapping", "(x timestamp) WITH (column_mapping_mode = 'NAME')")) {
+            assertThat(query("SELECT * FROM \"" + table.getName() + "$properties\""))
+                    .skippingTypesCheck()
+                    .matches("VALUES " +
+                            "('delta.enableDeletionVectors', 'false')," +
+                            "('delta.columnMapping.mode', 'name')," +
+                            "('delta.columnMapping.maxColumnId', '1')," +
+                            "('delta.minReaderVersion', '3')," +
+                            "('delta.minWriterVersion', '7')," +
+                            "('delta.feature.columnMapping', 'supported')," +
+                            "('delta.feature.timestampNtz', 'supported')");
+        }
+    }
+
+    @Test
     public void testDropAndAddColumnShowStatsForColumnMappingMode()
     {
         testDropAndAddColumnShowStatsForColumnMappingMode(ColumnMappingMode.ID);
@@ -1662,6 +1706,29 @@ public class TestDeltaLakeConnectorTest
         assertThat(getColumnComment(tableName, "a_number")).isEqualTo("test column comment");
 
         assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    void testPartitionPredicateOnCheckpointWithColumnMappingMode()
+    {
+        testPartitionPredicateOnCheckpointWithColumnMappingMode(ColumnMappingMode.ID);
+        testPartitionPredicateOnCheckpointWithColumnMappingMode(ColumnMappingMode.NAME);
+        testPartitionPredicateOnCheckpointWithColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
+    private void testPartitionPredicateOnCheckpointWithColumnMappingMode(ColumnMappingMode mode)
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_partition_checkpoint_with_column_mapping_mode",
+                "(x int, part int) WITH (column_mapping_mode='" + mode + "', checkpoint_interval = 3, partitioned_by = ARRAY['part'])")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (1, 10)", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (2, 20)", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (3, 30)", 1);
+
+            assertThat(query("SELECT * FROM " + table.getName() + " WHERE part = 10"))
+                    .matches("VALUES (1, 10)");
+        }
     }
 
     @Test
@@ -4133,6 +4200,39 @@ public class TestDeltaLakeConnectorTest
         assertQuery(session, "SELECT * FROM " + tableName, "VALUES 1, 2, 44, 5");
 
         assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    void testAddTimestampNtzColumnToCdfEnabledTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_timestamp_ntz", "(x int) WITH (change_data_feed_enabled = true)")) {
+            assertThat(getTableProperties(table.getName()))
+                    .containsExactlyInAnyOrderEntriesOf(ImmutableMap.<String, String>builder()
+                            .put("delta.enableChangeDataFeed", "true")
+                            .put("delta.enableDeletionVectors", "false")
+                            .put("delta.minReaderVersion", "1")
+                            .put("delta.minWriterVersion", "4")
+                            .buildOrThrow());
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN ts TIMESTAMP");
+
+            // CDF is enabled in this table. 'delta.feature.changeDataFeed' must be added when updating the table to versions supporting table features
+            assertThat(getTableProperties(table.getName()))
+                    .containsExactlyInAnyOrderEntriesOf(ImmutableMap.<String, String>builder()
+                            .put("delta.enableChangeDataFeed", "true")
+                            .put("delta.enableDeletionVectors", "false")
+                            .put("delta.feature.changeDataFeed", "supported")
+                            .put("delta.feature.timestampNtz", "supported")
+                            .put("delta.minReaderVersion", "3")
+                            .put("delta.minWriterVersion", "7")
+                            .buildOrThrow());
+        }
+    }
+
+    private Map<String, String> getTableProperties(String tableName)
+    {
+        return computeActual("SELECT key, value FROM \"" + tableName + "$properties\"").getMaterializedRows().stream()
+                .collect(toImmutableMap(row -> (String) row.getField(0), row -> (String) row.getField(1)));
     }
 
     @Test

@@ -14,9 +14,18 @@
 package io.trino.plugin.faker;
 
 import io.trino.testing.AbstractTestQueryFramework;
+import io.trino.testing.H2QueryRunner;
+import io.trino.testing.QueryAssertions;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.sql.TestTable;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
+
+import static io.trino.plugin.faker.FakerSplitManager.MAX_ROWS_PER_SPLIT;
+import static io.trino.spi.StandardErrorCode.INVALID_COLUMN_REFERENCE;
+import static org.assertj.core.api.Assertions.assertThat;
 
 final class TestFakerQueries
         extends AbstractTestQueryFramework
@@ -34,6 +43,26 @@ final class TestFakerQueries
         assertQuery("SHOW SCHEMAS FROM faker", "VALUES 'default', 'information_schema'");
         assertUpdate("CREATE TABLE faker.default.test (id INTEGER, name VARCHAR)");
         assertTableColumnNames("faker.default.test", "id", "name");
+    }
+
+    @Test
+    void testColumnComment()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "comment", "(id INTEGER, name VARCHAR)")) {
+            assertUpdate("COMMENT ON COLUMN %s.name IS 'comment text'".formatted(table.getName()));
+            assertQuery("SHOW COLUMNS FROM " + table.getName(), "VALUES ('id', 'integer', '', ''), ('name', 'varchar', '', 'comment text')");
+        }
+    }
+
+    @Test
+    void testCannotCommentRowId()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "cannot_comment", "(id INTEGER, name VARCHAR)")) {
+            assertThat(query("COMMENT ON COLUMN \"%s\".\"$row_id\" IS 'comment text'".formatted(table.getName())))
+                    .failure()
+                    .hasErrorCode(INVALID_COLUMN_REFERENCE)
+                    .hasMessageContaining("Cannot set comment for $row_id column");
+        }
     }
 
     @Test
@@ -184,67 +213,93 @@ final class TestFakerQueries
     @Test
     void testSelectLimit()
     {
-        @Language("SQL")
-        String tableQuery = "CREATE TABLE faker.default.single_column (rnd_bigint bigint NOT NULL)";
-        assertUpdate(tableQuery);
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "single_column", "(rnd_bigint bigint NOT NULL)")) {
+            assertQuery("SELECT count(rnd_bigint) FROM (SELECT rnd_bigint FROM %s LIMIT 5) a".formatted(table.getName()),
+                    "VALUES (5)");
 
-        @Language("SQL")
-        String testQuery = "SELECT count(rnd_bigint) FROM (SELECT rnd_bigint FROM single_column LIMIT 5) a";
-        assertQuery(testQuery, "VALUES (5)");
+            assertQuery("""
+                        SELECT count(rnd_bigint)
+                        FROM (SELECT rnd_bigint FROM %s LIMIT %d) a""".formatted(table.getName(), 2 * MAX_ROWS_PER_SPLIT),
+                    "VALUES (%d)".formatted(2 * MAX_ROWS_PER_SPLIT));
 
-        testQuery = "SELECT count(distinct rnd_bigint) FROM single_column LIMIT 5";
-        assertQuery(testQuery, "VALUES (1000)");
-        assertUpdate("DROP TABLE faker.default.single_column");
+            assertQuery("SELECT count(distinct rnd_bigint) FROM %s LIMIT 5".formatted(table.getName()),
+                    "VALUES (1000)");
+
+            assertQuery("""
+                        SELECT count(rnd_bigint)
+                        FROM (SELECT rnd_bigint FROM %s LIMIT %d) a""".formatted(table.getName(), MAX_ROWS_PER_SPLIT),
+                    "VALUES (%d)".formatted(MAX_ROWS_PER_SPLIT));
+
+            // generating data should be deterministic
+            String testQuery = """
+                               SELECT to_hex(checksum(rnd_bigint))
+                               FROM (SELECT rnd_bigint FROM %s LIMIT %d) a""".formatted(table.getName(), 3 * MAX_ROWS_PER_SPLIT);
+            assertQuery(testQuery, "VALUES ('1FB3289AC3A44EEA')");
+            assertQuery(testQuery, "VALUES ('1FB3289AC3A44EEA')");
+            assertQuery(testQuery, "VALUES ('1FB3289AC3A44EEA')");
+
+            // there should be no overlap between data generated from different splits
+            assertQuery("""
+                        SELECT count(1)
+                        FROM (SELECT rnd_bigint FROM %s LIMIT %d) a
+                        JOIN (SELECT rnd_bigint FROM %s LIMIT %d) b ON a.rnd_bigint = b.rnd_bigint""".formatted(table.getName(), 2 * MAX_ROWS_PER_SPLIT, table.getName(), 5 * MAX_ROWS_PER_SPLIT),
+                    "VALUES (%d)".formatted(2 * MAX_ROWS_PER_SPLIT));
+        }
     }
 
     @Test
     void testSelectDefaultTableLimit()
     {
-        @Language("SQL")
-        String tableQuery = "CREATE TABLE faker.default.default_table_limit (rnd_bigint bigint NOT NULL) WITH (default_limit = 100)";
-        assertUpdate(tableQuery);
-
-        @Language("SQL")
-        String testQuery = "SELECT count(distinct rnd_bigint) FROM default_table_limit";
-        assertQuery(testQuery, "VALUES (100)");
-
-        assertUpdate("DROP TABLE faker.default.default_table_limit");
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "default_table_limit", "(rnd_bigint bigint NOT NULL) WITH (default_limit = 100)")) {
+            assertQuery("SELECT count(distinct rnd_bigint) FROM " + table.getName(), "VALUES (100)");
+        }
     }
 
     @Test
     public void selectOnlyNulls()
     {
-        @Language("SQL")
-        String tableQuery = "CREATE TABLE faker.default.only_nulls (rnd_bigint bigint) WITH (null_probability = 1.0)";
-        assertUpdate(tableQuery);
-        tableQuery = "CREATE TABLE faker.default.only_nulls_column (rnd_bigint bigint WITH (null_probability = 1.0))";
-        assertUpdate(tableQuery);
-
-        @Language("SQL")
-        String testQuery = "SELECT count(distinct rnd_bigint) FROM only_nulls";
-        assertQuery(testQuery, "VALUES (0)");
-        testQuery = "SELECT count(distinct rnd_bigint) FROM only_nulls_column";
-        assertQuery(testQuery, "VALUES (0)");
-
-        assertUpdate("DROP TABLE faker.default.only_nulls");
-        assertUpdate("DROP TABLE faker.default.only_nulls_column");
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "only_nulls", "(rnd_bigint bigint) WITH (null_probability = 1.0)")) {
+            assertQuery("SELECT count(distinct rnd_bigint) FROM " + table.getName(), "VALUES (0)");
+        }
     }
 
     @Test
     void testSelectGenerator()
     {
-        @Language("SQL")
-        String tableQuery = "CREATE TABLE faker.default.generators (" +
-                "name VARCHAR NOT NULL WITH (generator = '#{Name.first_name} #{Name.last_name}'), " +
-                "age_years INTEGER NOT NULL" +
-                ")";
-        assertUpdate(tableQuery);
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "generators",
+                """
+                (
+                    name VARCHAR NOT NULL WITH (generator = '#{Name.first_name} #{Name.last_name}'),
+                    age_years INTEGER NOT NULL
+                )
+                """)) {
+            assertQuery("SELECT name FROM " + table.getName() + " LIMIT 1", "VALUES ('Bev Runolfsson')");
+        }
+    }
 
-        @Language("SQL")
-        String testQuery = "SELECT count(name) FILTER (WHERE LENGTH(name) - LENGTH(REPLACE(name, ' ', '')) = 1) FROM generators";
-        assertQuery(testQuery, "VALUES (1000)");
-
-        assertUpdate("DROP TABLE faker.default.generators");
+    @Test
+    void testSelectLocale()
+            throws Exception
+    {
+        try (
+                QueryRunner queryRunner = FakerQueryRunner.builder().setFakerProperties(Map.of("faker.locale", "pl-PL")).build();
+                H2QueryRunner h2QueryRunner = new H2QueryRunner();
+                TestTable table = new TestTable(queryRunner::execute, "locale",
+                        """
+                        (
+                            name VARCHAR NOT NULL WITH (generator = '#{Name.first_name} #{Name.last_name}'),
+                            age_years INTEGER NOT NULL
+                        )
+                        """)) {
+            QueryAssertions.assertQuery(
+                    queryRunner,
+                    getSession(),
+                    "SELECT name FROM " + table.getName() + " LIMIT 1",
+                    h2QueryRunner,
+                    "VALUES ('Eugeniusz Szczepanik')",
+                    false,
+                    false);
+        }
     }
 
     @Test
@@ -615,5 +670,184 @@ final class TestFakerQueries
         // exclusive range to get the max high bound
 
         assertUpdate("DROP TABLE faker.default.all_types_range");
+    }
+
+    @Test
+    void testSelectIn()
+    {
+        @Language("SQL")
+        String tableQuery =
+                """
+                CREATE TABLE faker.default.all_types_in (
+                rnd_bigint bigint NOT NULL,
+                rnd_integer integer NOT NULL,
+                rnd_smallint smallint NOT NULL,
+                rnd_tinyint tinyint NOT NULL,
+                rnd_boolean boolean NOT NULL,
+                rnd_date date NOT NULL,
+                rnd_decimal1 decimal NOT NULL,
+                rnd_decimal2 decimal(18,5) NOT NULL,
+                rnd_decimal3 decimal(38,0) NOT NULL,
+                rnd_decimal4 decimal(38,38) NOT NULL,
+                rnd_decimal5 decimal(5,2) NOT NULL,
+                rnd_real real NOT NULL,
+                rnd_double double NOT NULL,
+                rnd_interval_day_time interval day to second NOT NULL,
+                rnd_interval_year interval year to month NOT NULL,
+                rnd_timestamp timestamp NOT NULL,
+                rnd_timestamp0 timestamp(0) NOT NULL,
+                rnd_timestamp6 timestamp(6) NOT NULL,
+                rnd_timestamp9 timestamp(9) NOT NULL,
+                rnd_timestamptz timestamp with time zone NOT NULL,
+                rnd_timestamptz0 timestamp(0) with time zone NOT NULL,
+                rnd_timestamptz6 timestamp(6) with time zone NOT NULL,
+                rnd_timestamptz9 timestamp(9) with time zone NOT NULL,
+                rnd_time time NOT NULL,
+                rnd_time0 time(0) NOT NULL,
+                rnd_time6 time(6) NOT NULL,
+                rnd_time9 time(9) NOT NULL,
+                rnd_timetz time with time zone NOT NULL,
+                rnd_timetz0 time(0) with time zone NOT NULL,
+                rnd_timetz6 time(6) with time zone NOT NULL,
+                rnd_timetz9 time(9) with time zone NOT NULL,
+                rnd_timetz12 time(12) with time zone NOT NULL,
+                rnd_varbinary varbinary NOT NULL,
+                rnd_varchar varchar NOT NULL,
+                rnd_nvarchar varchar(1000) NOT NULL,
+                rnd_ipaddress ipaddress NOT NULL,
+                rnd_uuid uuid NOT NULL)""";
+        assertUpdate(tableQuery);
+
+        @Language("SQL")
+        String testQuery;
+
+        // inclusive ranges (BETWEEN) that produce only 2 values
+        // obtained using `Math.nextUp((float) 0.0)`
+        testQuery =
+                """
+                SELECT
+                count(distinct rnd_bigint),
+                count(distinct rnd_integer),
+                count(distinct rnd_smallint),
+                count(distinct rnd_tinyint),
+                count(distinct rnd_date),
+                count(distinct rnd_decimal1),
+                count(distinct rnd_decimal2),
+                count(distinct rnd_decimal3),
+                count(distinct rnd_decimal4),
+                count(distinct rnd_decimal5),
+                count(distinct rnd_real),
+                count(distinct rnd_double),
+                count(distinct rnd_interval_day_time),
+                count(distinct rnd_interval_year),
+                count(distinct rnd_timestamp),
+                count(distinct rnd_timestamp0),
+                count(distinct rnd_timestamp6),
+                count(distinct rnd_timestamp9),
+                count(distinct rnd_timestamptz),
+                count(distinct rnd_timestamptz0),
+                count(distinct rnd_timestamptz6),
+                count(distinct rnd_timestamptz9),
+                count(distinct rnd_time),
+                count(distinct rnd_time0),
+                count(distinct rnd_time6),
+                count(distinct rnd_time9),
+                count(distinct rnd_timetz),
+                count(distinct rnd_timetz0),
+                count(distinct rnd_timetz6),
+                count(distinct rnd_timetz9),
+                count(distinct rnd_varbinary),
+                count(distinct rnd_varchar),
+                count(distinct rnd_nvarchar),
+                count(distinct rnd_ipaddress),
+                count(distinct rnd_uuid)
+                FROM all_types_in
+                WHERE 1=1
+                AND rnd_bigint IN (0, 1)
+                AND rnd_integer IN (0, 1)
+                AND rnd_smallint IN (0, 1)
+                AND rnd_tinyint IN (0, 1)
+                AND rnd_date IN (DATE '2022-03-01', DATE '2022-03-02')
+                AND rnd_decimal1 IN (0, 1)
+                AND rnd_decimal2 IN (0.00000, 0.00001)
+                AND rnd_decimal3 IN (0, 1)
+                AND rnd_decimal4 IN (DECIMAL '0.00000000000000000000000000000000000000',  DECIMAL '0.00000000000000000000000000000000000001')
+                AND rnd_decimal5 IN (0.00, 0.01)
+                AND rnd_real IN (REAL '0.0', REAL '1.4E-45')
+                AND rnd_double IN (DOUBLE '0.0', DOUBLE '4.9E-324')
+                AND rnd_interval_day_time IN (INTERVAL '0.000' SECOND, INTERVAL '0.001' SECOND)
+                AND rnd_interval_year IN (INTERVAL '0' MONTH, INTERVAL '1' MONTH)
+                AND rnd_timestamp IN (TIMESTAMP '2022-03-21 00:00:00.000',  TIMESTAMP '2022-03-21 00:00:00.001')
+                AND rnd_timestamp0 IN (TIMESTAMP '2022-03-21 00:00:00',  TIMESTAMP '2022-03-21 00:00:01')
+                AND rnd_timestamp6 IN (TIMESTAMP '2022-03-21 00:00:00.000000',  TIMESTAMP '2022-03-21 00:00:00.000001')
+                AND rnd_timestamp9 IN (TIMESTAMP '2022-03-21 00:00:00.000000000',  TIMESTAMP '2022-03-21 00:00:00.000000001')
+                AND rnd_timestamptz IN (TIMESTAMP '2022-03-21 00:00:00.000 +01:00',  TIMESTAMP '2022-03-21 00:00:00.001 +01:00')
+                AND rnd_timestamptz0 IN (TIMESTAMP '2022-03-21 00:00:00 +01:00',  TIMESTAMP '2022-03-21 00:00:01 +01:00')
+                AND rnd_timestamptz6 IN (TIMESTAMP '2022-03-21 00:00:00.000000 +01:00',  TIMESTAMP '2022-03-21 00:00:00.000001 +01:00')
+                AND rnd_timestamptz9 IN (TIMESTAMP '2022-03-21 00:00:00.000000000 +01:00',  TIMESTAMP '2022-03-21 00:00:00.000000001 +01:00')
+                AND rnd_time IN (TIME '01:02:03.456',  TIME '01:02:03.457')
+                AND rnd_time0 IN (TIME '01:02:03',  TIME '01:02:04')
+                AND rnd_time6 IN (TIME '01:02:03.000456',  TIME '01:02:03.000457')
+                AND rnd_time9 IN (TIME '01:02:03.000000456',  TIME '01:02:03.000000457')
+                AND rnd_timetz IN (TIME '01:02:03.456 +01:00',  TIME '01:02:03.457 +01:00')
+                AND rnd_timetz0 IN (TIME '01:02:03 +01:00',  TIME '01:02:04 +01:00')
+                AND rnd_timetz6 IN (TIME '01:02:03.000456 +01:00',  TIME '01:02:03.000457 +01:00')
+                AND rnd_timetz9 IN (TIME '01:02:03.000000456 +01:00',  TIME '01:02:03.000000457 +01:00')
+                AND rnd_varbinary IN (x'ff', x'00')
+                AND rnd_varchar IN ('aa', 'bb')
+                AND rnd_nvarchar IN ('aa', 'bb')
+                AND rnd_ipaddress IN (IPADDRESS '0.0.0.0', IPADDRESS '1.2.3.4')
+                AND rnd_uuid IN (UUID '1fc74d96-0216-449b-a145-455578a9eaa5', UUID '3ee49ede-0026-45e4-ba06-08404f794557')
+                """;
+        assertQuery(testQuery,
+                """
+                VALUES (2,
+                2,
+                2,
+                2,
+                -- date
+                2,
+                -- decimal
+                2,
+                2,
+                2,
+                2,
+                2,
+                -- real, double
+                2,
+                2,
+                -- intervals
+                2,
+                2,
+                -- timestamps
+                2,
+                2,
+                2,
+                2,
+                -- timestamps with time zone
+                2,
+                2,
+                2,
+                2,
+                -- time
+                2,
+                2,
+                2,
+                2,
+                -- time with time zone
+                2,
+                2,
+                2,
+                2,
+                -- character types
+                2,
+                2,
+                2,
+                -- ip, uuid
+                2,
+                2)
+                """);
+
+        assertUpdate("DROP TABLE faker.default.all_types_in");
     }
 }

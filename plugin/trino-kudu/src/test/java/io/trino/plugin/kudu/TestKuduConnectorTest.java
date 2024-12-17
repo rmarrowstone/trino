@@ -65,6 +65,7 @@ public class TestKuduConnectorTest
                  SUPPORTS_CREATE_MATERIALIZED_VIEW,
                  SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
                  SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_MAP_TYPE,
                  SUPPORTS_NEGATIVE_DATE,
                  SUPPORTS_NOT_NULL_CONSTRAINT,
                  SUPPORTS_RENAME_SCHEMA,
@@ -77,9 +78,9 @@ public class TestKuduConnectorTest
     }
 
     @Override
-    protected String createTableForWrites(String createTable)
+    protected void createTableForWrites(String createTable, String tableName, Optional<String> primaryKey)
     {
-        return createKuduTableForWrites(createTable);
+        assertUpdate(createKuduTableForWrites(format(createTable, tableName)));
     }
 
     public static String createKuduTableForWrites(String createTable)
@@ -328,7 +329,7 @@ public class TestKuduConnectorTest
         String tableName = "test_delete_" + randomNameSuffix();
 
         // delete using a subquery
-        assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+        createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
         assertUpdate("INSERT INTO %s SELECT * FROM nation".formatted(tableName), 25);
         assertExplainAnalyze("EXPLAIN ANALYZE DELETE FROM " + tableName + " WHERE regionkey IN (SELECT regionkey FROM region WHERE name LIKE 'A%' LIMIT 1)",
                 "SemiJoin.*");
@@ -638,7 +639,7 @@ public class TestKuduConnectorTest
     {
         // delete successive parts of the table
         withTableName("test_delete", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
             assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 100", "SELECT count(*) FROM orders WHERE custkey <= 100");
             assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 100");
@@ -651,7 +652,7 @@ public class TestKuduConnectorTest
         });
 
         withTableName("test_delete", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
             assertUpdate("DELETE FROM " + tableName + " WHERE custkey <= 100", "SELECT count(*) FROM orders WHERE custkey <= 100");
             assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE custkey > 100");
@@ -665,14 +666,14 @@ public class TestKuduConnectorTest
 
         // delete without matching any rows
         withTableName("test_delete", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
             assertUpdate("DELETE FROM " + tableName + " WHERE orderkey < 0", 0);
         });
 
         // delete with a predicate that optimizes to false
         withTableName("test_delete", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
             assertUpdate("DELETE FROM " + tableName + " WHERE orderkey > 5 AND orderkey < 4", 0);
         });
@@ -683,7 +684,7 @@ public class TestKuduConnectorTest
     public void testDeleteWithLike()
     {
         withTableName("test_with_like", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO %s SELECT * FROM nation".formatted(tableName), 25);
             assertUpdate("DELETE FROM " + tableName + " WHERE name LIKE '%a%'", "VALUES 0");
             assertUpdate("DELETE FROM " + tableName + " WHERE name LIKE '%A%'", "SELECT count(*) FROM nation WHERE name LIKE '%A%'");
@@ -709,7 +710,7 @@ public class TestKuduConnectorTest
     public void testUpdateWithPredicates()
     {
         withTableName("test_update_with_predicates", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s (a INT, b INT, c INT)".formatted(tableName)));
+            createTableForWrites("CREATE TABLE %s (a INT, b INT, c INT)", tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, 2, 3), (11, 12, 13), (21, 22, 23)", 3);
             assertUpdate("UPDATE " + tableName + " SET a = a - 1 WHERE c = 3", 1);
             assertQuery("SELECT * FROM " + tableName, "VALUES (0, 2, 3), (11, 12, 13), (21, 22, 23)");
@@ -731,7 +732,7 @@ public class TestKuduConnectorTest
     public void testUpdateAllValues()
     {
         withTableName("test_update_all_columns", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s (a INT, b INT, c INT)".formatted(tableName)));
+            createTableForWrites("CREATE TABLE %s (a INT, b INT, c INT)", tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, 2, 3), (11, 12, 13), (21, 22, 23)", 3);
             assertUpdate("UPDATE " + tableName + " SET b = b - 1, c = c * 2", 3);
             assertQuery("SELECT * FROM " + tableName, "VALUES (1, 1, 6), (11, 11, 26), (21, 21, 46)");
@@ -791,7 +792,7 @@ public class TestKuduConnectorTest
     public void testDeleteWithComplexPredicate()
     {
         withTableName("test_delete_complex", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
             assertUpdate("DELETE FROM " + tableName + " WHERE orderkey % 2 = 0", "SELECT count(*) FROM orders WHERE orderkey % 2 = 0");
             assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE orderkey % 2 <> 0");
@@ -809,7 +810,7 @@ public class TestKuduConnectorTest
     {
         // TODO (https://github.com/trinodb/trino/issues/13210) Migrate these tests to AbstractTestEngineOnlyQueries
         withTableName("test_delete_subquery", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
             assertUpdate("DELETE FROM " + tableName + " WHERE regionkey IN (SELECT regionkey FROM region WHERE name LIKE 'A%')", 15);
             assertQuery(
@@ -818,7 +819,7 @@ public class TestKuduConnectorTest
         });
 
         withTableName("test_delete_subquery", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
 
             // delete using a scalar and EXISTS subquery
@@ -829,7 +830,7 @@ public class TestKuduConnectorTest
         });
 
         withTableName("test_delete_subquery", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
 
             // delete using correlated EXISTS subquery
@@ -840,7 +841,7 @@ public class TestKuduConnectorTest
         });
 
         withTableName("test_delete_subquery", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
             // delete using correlated IN subquery
             assertUpdate(format("DELETE FROM %1$s WHERE regionkey IN (SELECT regionkey FROM region WHERE regionkey = %1$s.regionkey AND name LIKE 'A%%')", tableName), 15);
@@ -855,7 +856,7 @@ public class TestKuduConnectorTest
     public void testDeleteWithSemiJoin()
     {
         withTableName("test_delete_semijoin", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
             // delete with multiple SemiJoin
             assertUpdate(
@@ -871,7 +872,7 @@ public class TestKuduConnectorTest
         });
 
         withTableName("test_delete_semijoin", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
 
             // delete with SemiJoin null handling
@@ -892,7 +893,7 @@ public class TestKuduConnectorTest
     public void testDeleteWithVarcharPredicate()
     {
         withTableName("test_delete_varchar", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, ORDER_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + ORDER_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM orders", 15000);
             assertUpdate("DELETE FROM " + tableName + " WHERE orderstatus = 'O'", "SELECT count(*) FROM orders WHERE orderstatus = 'O'");
             assertQuery("SELECT * FROM " + tableName, "SELECT * FROM orders WHERE orderstatus <> 'O'");
@@ -904,7 +905,7 @@ public class TestKuduConnectorTest
     public void testDeleteAllDataFromTable()
     {
         withTableName("test_delete_all_data", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, REGION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + REGION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM region", 5);
 
             // not using assertUpdate as some connectors provide update count and some not
@@ -918,7 +919,7 @@ public class TestKuduConnectorTest
     public void testRowLevelDelete()
     {
         withTableName("test_row_delete", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, REGION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + REGION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM region", 5);
             assertUpdate("DELETE FROM " + tableName + " WHERE regionkey = 2", 1);
             assertQuery("SELECT count(*) FROM " + tableName, "VALUES 4");
@@ -926,19 +927,19 @@ public class TestKuduConnectorTest
     }
 
     /**
-     * This test fails intermittently because Kudu doesn't have strong enough
-     * semantics to support writing from multiple threads.
+     * createTableForWrites will create the table using the first column as the primary key.
+     * Attempting to update the primary key (`nationkey` in this case) caused a failure due to duplicate values.
+     * This override modifies the test to focus on updating the `regionkey` instead.
      */
     @Test
-    @Disabled
     @Override
     public void testUpdate()
     {
         withTableName("test_update", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
-            assertUpdate("UPDATE " + tableName + " SET nationkey = 100 WHERE regionkey = 2", 5);
-            assertQuery("SELECT count(*) FROM " + tableName + " WHERE nationkey = 100", "VALUES 5");
+            assertUpdate("UPDATE " + tableName + " SET regionkey = 100 WHERE regionkey = 2", 5);
+            assertQuery("SELECT count(*) FROM " + tableName + " WHERE regionkey = 100", "VALUES 5");
         });
     }
 
@@ -961,7 +962,7 @@ public class TestKuduConnectorTest
     public void testRowLevelUpdate()
     {
         withTableName("test_update", tableName -> {
-            assertUpdate(createTableForWrites("CREATE TABLE %s %s".formatted(tableName, NATION_COLUMNS)));
+            createTableForWrites("CREATE TABLE %s " + NATION_COLUMNS, tableName, Optional.empty());
             assertUpdate("INSERT INTO " + tableName + " SELECT * FROM nation", 25);
             assertUpdate("UPDATE " + tableName + " SET nationkey = 100 + nationkey WHERE regionkey = 2", 5);
             assertThat(query("SELECT * FROM " + tableName))
@@ -976,6 +977,15 @@ public class TestKuduConnectorTest
                     .matches("SELECT CASE regionkey WHEN 2 THEN 2*(nationkey+100) + 1000 WHEN 3 THEN nationkey * 2 + 1000 ELSE nationkey END nationkey, name, regionkey, comment FROM tpch.tiny.nation");
         });
     }
+
+    /**
+     * This test fails intermittently because Kudu doesn't have strong enough
+     * semantics to support writing from multiple threads.
+     */
+    @Test
+    @Disabled
+    @Override
+    public void testUpdateCaseSensitivity() {}
 
     @Test
     @Override
@@ -1037,7 +1047,6 @@ public class TestKuduConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
-    @Test
     @Override
     protected TestTable createTableWithDefaultColumns()
     {

@@ -851,7 +851,7 @@ class StatementAnalyzer
             analyzeCheckConstraints(table, tableName, accessControlScope, tableSchema.tableSchema().getCheckConstraints());
             analysis.registerTable(table, Optional.of(handle), tableName, session.getIdentity().getUser(), accessControlScope, Optional.empty());
 
-            createMergeAnalysis(table, handle, tableSchema, tableScope, tableScope, ImmutableList.of());
+            createMergeAnalysis(table, handle, tableSchema, tableScope, tableScope, ImmutableList.of(), ImmutableMultimap.of());
 
             return createAndAssignScope(node, scope, Field.newUnqualified("rows", BIGINT));
         }
@@ -3387,14 +3387,14 @@ class StatementAnalyzer
                     .collect(toImmutableMap(ColumnSchema::getName, Function.identity()));
 
             for (UpdateAssignment assignment : update.getAssignments()) {
-                String columnName = assignment.getName().getValue();
+                String columnName = assignment.getName().getValue().toLowerCase(ENGLISH);
                 if (!columns.containsKey(columnName)) {
                     throw semanticException(COLUMN_NOT_FOUND, assignment.getName(), "The UPDATE SET target column %s doesn't exist", columnName);
                 }
             }
 
             Set<String> assignmentTargets = update.getAssignments().stream()
-                    .map(assignment -> assignment.getName().getValue())
+                    .map(assignment -> assignment.getName().getValue().toLowerCase(ENGLISH))
                     .collect(toImmutableSet());
             accessControl.checkCanUpdateTableColumns(session.toSecurityContext(), tableName, assignmentTargets);
 
@@ -3432,7 +3432,7 @@ class StatementAnalyzer
             ImmutableList.Builder<Type> expressionTypesBuilder = ImmutableList.builder();
             ImmutableMap.Builder<String, Set<SourceColumn>> sourceColumnsByColumnNameBuilder = ImmutableMap.builder();
             for (UpdateAssignment assignment : update.getAssignments()) {
-                String targetColumnName = assignment.getName().getValue();
+                String targetColumnName = assignment.getName().getValue().toLowerCase(ENGLISH);
                 Expression expression = assignment.getValue();
                 ExpressionAnalysis expressionAnalysis = analyzeExpression(expression, tableScope);
                 analysesBuilder.add(expressionAnalysis);
@@ -3450,7 +3450,7 @@ class StatementAnalyzer
             Map<String, Set<SourceColumn>> sourceColumnsByColumnName = sourceColumnsByColumnNameBuilder.buildOrThrow();
 
             List<Type> tableTypes = update.getAssignments().stream()
-                    .map(assignment -> requireNonNull(columns.get(assignment.getName().getValue())))
+                    .map(assignment -> requireNonNull(columns.get(assignment.getName().getValue().toLowerCase(ENGLISH))))
                     .map(ColumnSchema::getType)
                     .collect(toImmutableList());
 
@@ -3482,7 +3482,10 @@ class StatementAnalyzer
                                     sourceColumnsByColumnName.getOrDefault(column.getName(), ImmutableSet.of())))
                             .collect(toImmutableList())));
 
-            createMergeAnalysis(table, handle, tableSchema, tableScope, tableScope, ImmutableList.of(updatedColumnHandles));
+            ImmutableMultimap.Builder<Integer, ColumnHandle> updateCaseColumnsBuilder = ImmutableMultimap.builder();
+            // Update only have one update case number which default is 0
+            updatedColumnHandles.forEach(columnHandle -> updateCaseColumnsBuilder.put(0, columnHandle));
+            createMergeAnalysis(table, handle, tableSchema, tableScope, tableScope, ImmutableList.of(updatedColumnHandles), updateCaseColumnsBuilder.build());
 
             return createAndAssignScope(update, scope, Field.newUnqualified("rows", BIGINT));
         }
@@ -3645,12 +3648,32 @@ class StatementAnalyzer
             analysis.setUpdateTarget(targetTableHandle.catalogHandle().getVersion(), tableName, Optional.of(table), Optional.of(updatedColumns));
             List<List<ColumnHandle>> mergeCaseColumnHandles = buildCaseColumnLists(merge, dataColumnSchemas, allColumnHandles);
 
-            createMergeAnalysis(table, targetTableHandle, tableSchema, targetTableScope, joinScope, mergeCaseColumnHandles);
+            checkArgument(
+                    mergeCaseColumnHandles.size() == merge.getMergeCases().size(),
+                    "Unexpected mergeCaseColumnHandles size: %s with merge cases size: %s", mergeCaseColumnHandles.size(), merge.getMergeCases().size());
+            ImmutableMultimap.Builder<Integer, ColumnHandle> updateCaseColumnHandles = ImmutableMultimap.builder();
+            for (int caseCounter = 0; caseCounter < merge.getMergeCases().size(); caseCounter++) {
+                MergeCase mergeCase = merge.getMergeCases().get(caseCounter);
+                if (mergeCase instanceof MergeUpdate) {
+                    for (ColumnHandle columnHandle : mergeCaseColumnHandles.get(caseCounter)) {
+                        updateCaseColumnHandles.put(caseCounter, columnHandle);
+                    }
+                }
+            }
+
+            createMergeAnalysis(table, targetTableHandle, tableSchema, targetTableScope, joinScope, mergeCaseColumnHandles, updateCaseColumnHandles.build());
 
             return createAndAssignScope(merge, Optional.empty(), Field.newUnqualified("rows", BIGINT));
         }
 
-        private void createMergeAnalysis(Table table, TableHandle handle, TableSchema tableSchema, Scope tableScope, Scope joinScope, List<List<ColumnHandle>> updatedColumns)
+        private void createMergeAnalysis(
+                Table table,
+                TableHandle handle,
+                TableSchema tableSchema,
+                Scope tableScope,
+                Scope joinScope,
+                List<List<ColumnHandle>> mergeCaseColumns,
+                Multimap<Integer, ColumnHandle> updateCaseColumns)
         {
             Optional<PartitioningHandle> updateLayout = metadata.getUpdateLayout(session, handle);
             Map<String, ColumnHandle> allColumnHandles = metadata.getColumnHandles(session, handle);
@@ -3713,7 +3736,8 @@ class StatementAnalyzer
                     dataColumnSchemas,
                     dataColumnHandles,
                     redistributionColumnHandles,
-                    updatedColumns,
+                    mergeCaseColumns,
+                    updateCaseColumns,
                     nonNullableColumnHandles,
                     columnHandleFieldNumbers,
                     mergeRowType,
@@ -4333,18 +4357,10 @@ class StatementAnalyzer
                 if (windowFunction.getFilter().isPresent()) {
                     throw semanticException(NOT_SUPPORTED, node, "FILTER is not yet supported for window functions");
                 }
-
-                if (windowFunction.getOrderBy().isPresent()) {
-                    throw semanticException(NOT_SUPPORTED, windowFunction, "Window function with ORDER BY is not supported");
-                }
-
-                List<Expression> nestedWindowExpressions = extractWindowExpressions(windowFunction.getArguments());
+                List<Expression> nestedWindowExpressions = new ArrayList<>(extractWindowExpressions(windowFunction.getArguments()));
+                windowFunction.getOrderBy().map(OrderBy::getChildren).map(ExpressionTreeUtils::extractWindowExpressions).ifPresent(nestedWindowExpressions::addAll);
                 if (!nestedWindowExpressions.isEmpty()) {
                     throw semanticException(NESTED_WINDOW, nestedWindowExpressions.getFirst(), "Cannot nest window functions or row pattern measures inside window function arguments");
-                }
-
-                if (windowFunction.isDistinct()) {
-                    throw semanticException(NOT_SUPPORTED, node, "DISTINCT in window function parameters not yet supported: %s", windowFunction);
                 }
 
                 ResolvedWindow window = analysis.getWindow(windowFunction);
@@ -4369,6 +4385,14 @@ class StatementAnalyzer
                 FunctionKind kind = resolvedFunction.functionKind();
                 if (kind != AGGREGATE && kind != WINDOW) {
                     throw semanticException(FUNCTION_NOT_WINDOW, node, "Not a window function: %s", windowFunction.getName());
+                }
+
+                if (windowFunction.isDistinct() && kind != AGGREGATE) {
+                    throw semanticException(NOT_SUPPORTED, node, "Only aggregation window functions with DISTINCT are supported: %s", windowFunction);
+                }
+
+                if (windowFunction.getOrderBy().isPresent() && kind != AGGREGATE) {
+                    throw semanticException(NOT_SUPPORTED, windowFunction, "Only aggregation window functions with ORDER BY are supported");
                 }
             }
 

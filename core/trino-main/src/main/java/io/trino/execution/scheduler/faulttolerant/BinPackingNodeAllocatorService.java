@@ -18,6 +18,7 @@ import com.google.common.base.Ticker;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
@@ -47,7 +48,6 @@ import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.memory.MemoryPoolInfo;
-import jakarta.annotation.Nullable;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.assertj.core.util.VisibleForTesting;
@@ -351,6 +351,10 @@ public class BinPackingNodeAllocatorService
                 .map(entry -> new QueryPendingAcquires(entry.getKey(), entry.getValue().iterator()))
                 .collect(toCollection(ArrayList::new));
 
+        if (iterators.isEmpty()) {
+            return ImmutableList.<PendingAcquire>of().iterator();
+        }
+
         int startingIteratorIndex = 0;
         if (startingQueryId.isPresent()) {
             startingIteratorIndex = -1;
@@ -499,7 +503,7 @@ public class BinPackingNodeAllocatorService
                     switch (acquire.getLastReservationStatus()) {
                         case NONE_MATCHING -> pendingStandardNoneMatching++;
                         case NOT_ENOUGH_RESOURCES_NOW -> pendingStandardNotEnoughResources++;
-                        case null -> pendingStandardUnknown++;
+                        case UNKNOWN -> pendingStandardUnknown++;
                         case RESERVED -> {} // reserved in the meantime
                     }
                 }
@@ -507,7 +511,7 @@ public class BinPackingNodeAllocatorService
                     switch (acquire.getLastReservationStatus()) {
                         case NONE_MATCHING -> pendingSpeculativeNoneMatching++;
                         case NOT_ENOUGH_RESOURCES_NOW -> pendingSpeculativeNotEnoughResources++;
-                        case null -> pendingSpeculativeUnknown++;
+                        case UNKNOWN -> pendingSpeculativeUnknown++;
                         case RESERVED -> {} // reserved in the meantime
                     }
                 }
@@ -515,7 +519,7 @@ public class BinPackingNodeAllocatorService
                     switch (acquire.getLastReservationStatus()) {
                         case NONE_MATCHING -> pendingEagerSpeculativeNoneMatching++;
                         case NOT_ENOUGH_RESOURCES_NOW -> pendingEagerSpeculativeNotEnoughResources++;
-                        case null -> pendingEagerSpeculativeUnknown++;
+                        case UNKNOWN -> pendingEagerSpeculativeUnknown++;
                         case RESERVED -> {} // reserved in the meantime
                     }
                 }
@@ -564,7 +568,7 @@ public class BinPackingNodeAllocatorService
         private final Stopwatch noMatchingNodeStopwatch;
         private final Stopwatch notEnoughResourcesStopwatch;
 
-        @Nullable private volatile BinPackingSimulation.ReservationStatus lastReservationStatus;
+        private volatile BinPackingSimulation.ReservationStatus lastReservationStatus = BinPackingSimulation.ReservationStatus.UNKNOWN;
 
         private PendingAcquire(NodeRequirements nodeRequirements, BinPackingNodeLease lease, QueryId queryId, Ticker ticker)
         {
@@ -628,7 +632,6 @@ public class BinPackingNodeAllocatorService
             return lease.getExecutionClass();
         }
 
-        @Nullable
         public BinPackingSimulation.ReservationStatus getLastReservationStatus()
         {
             return lastReservationStatus;
@@ -999,6 +1002,7 @@ public class BinPackingNodeAllocatorService
 
         public enum ReservationStatus
         {
+            UNKNOWN,
             NONE_MATCHING,
             NOT_ENOUGH_RESOURCES_NOW,
             RESERVED

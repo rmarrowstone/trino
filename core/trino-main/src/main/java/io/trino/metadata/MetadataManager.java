@@ -17,6 +17,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Multimap;
 import com.google.common.collect.Streams;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -399,20 +400,27 @@ public final class MetadataManager
     }
 
     @Override
-    public TableHandle makeCompatiblePartitioning(Session session, TableHandle tableHandle, PartitioningHandle partitioningHandle)
+    public Optional<TableHandle> applyPartitioning(Session session, TableHandle tableHandle, Optional<PartitioningHandle> partitioning, List<ColumnHandle> columns)
     {
-        checkArgument(partitioningHandle.getCatalogHandle().isPresent(), "Expect partitioning handle from connector, got system partitioning handle");
-        CatalogHandle catalogHandle = partitioningHandle.getCatalogHandle().get();
-        checkArgument(catalogHandle.equals(tableHandle.catalogHandle()), "ConnectorId of tableHandle and partitioningHandle does not match");
+        if (partitioning.isPresent()) {
+            PartitioningHandle partitioningHandle = partitioning.get();
+            if (!tableHandle.catalogHandle().equals(partitioningHandle.getCatalogHandle().orElse(null)) ||
+                    !tableHandle.transaction().equals(partitioningHandle.getTransactionHandle().orElse(null))) {
+                return Optional.empty();
+            }
+        }
+
+        CatalogHandle catalogHandle = tableHandle.catalogHandle();
         CatalogMetadata catalogMetadata = getCatalogMetadata(session, catalogHandle);
         ConnectorMetadata metadata = catalogMetadata.getMetadataFor(session, catalogHandle);
-        ConnectorTransactionHandle transaction = catalogMetadata.getTransactionHandleFor(catalogHandle);
+        ConnectorSession connectorSession = session.toConnectorSession(catalogHandle);
 
-        ConnectorTableHandle newTableHandle = metadata.makeCompatiblePartitioning(
-                session.toConnectorSession(catalogHandle),
+        return metadata.applyPartitioning(
+                connectorSession,
                 tableHandle.connectorHandle(),
-                partitioningHandle.getConnectorHandle());
-        return new TableHandle(catalogHandle, newTableHandle, transaction);
+                partitioning.map(PartitioningHandle::getConnectorHandle),
+                columns)
+                .map(handle -> new TableHandle(catalogHandle, handle, tableHandle.transaction()));
     }
 
     @Override
@@ -1352,11 +1360,15 @@ public final class MetadataManager
     }
 
     @Override
-    public MergeHandle beginMerge(Session session, TableHandle tableHandle)
+    public MergeHandle beginMerge(Session session, TableHandle tableHandle, Multimap<Integer, ColumnHandle> updateCaseColumns)
     {
         CatalogHandle catalogHandle = tableHandle.catalogHandle();
         ConnectorMetadata metadata = getMetadataForWrite(session, catalogHandle);
-        ConnectorMergeTableHandle newHandle = metadata.beginMerge(session.toConnectorSession(catalogHandle), tableHandle.connectorHandle(), getRetryPolicy(session).getRetryMode());
+        ConnectorMergeTableHandle newHandle = metadata.beginMerge(
+                session.toConnectorSession(catalogHandle),
+                tableHandle.connectorHandle(),
+                updateCaseColumns.asMap(),
+                getRetryPolicy(session).getRetryMode());
         return new MergeHandle(tableHandle.withConnectorHandle(newHandle.getTableHandle()), newHandle);
     }
 

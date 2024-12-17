@@ -42,8 +42,8 @@ public class TestDeltaLakeConfig
         assertRecordedDefaults(recordDefaults(DeltaLakeConfig.class)
                 .setDataFileCacheSize(DeltaLakeConfig.DEFAULT_DATA_FILE_CACHE_SIZE)
                 .setDataFileCacheTtl(new Duration(30, MINUTES))
-                .setMetadataCacheTtl(new Duration(5, TimeUnit.MINUTES))
-                .setMetadataCacheMaxSize(1000)
+                .setMetadataCacheTtl(new Duration(30, TimeUnit.MINUTES))
+                .setMetadataCacheMaxRetainedSize(DeltaLakeConfig.DEFAULT_METADATA_CACHE_MAX_RETAINED_SIZE)
                 .setDomainCompactionThreshold(1000)
                 .setMaxSplitsPerSecond(Integer.MAX_VALUE)
                 .setMaxOutstandingSplits(1_000)
@@ -74,7 +74,8 @@ public class TestDeltaLakeConfig
                 .setProjectionPushdownEnabled(true)
                 .setQueryPartitionFilterRequired(false)
                 .setDeletionVectorsEnabled(false)
-                .setDeltaLogFileSystemCacheDisabled(false));
+                .setDeltaLogFileSystemCacheDisabled(false)
+                .setMetadataParallelism(8));
     }
 
     @Test
@@ -82,7 +83,7 @@ public class TestDeltaLakeConfig
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("delta.metadata.cache-ttl", "10m")
-                .put("delta.metadata.cache-size", "10")
+                .put("delta.metadata.cache-max-retained-size", "1GB")
                 .put("delta.metadata.live-files.cache-size", "0 MB")
                 .put("delta.metadata.live-files.cache-ttl", "60m")
                 .put("delta.domain-compaction-threshold", "500")
@@ -116,13 +117,14 @@ public class TestDeltaLakeConfig
                 .put("delta.query-partition-filter-required", "true")
                 .put("delta.deletion-vectors-enabled", "true")
                 .put("delta.fs.cache.disable-transaction-log-caching", "true")
+                .put("delta.metadata.parallelism", "10")
                 .buildOrThrow();
 
         DeltaLakeConfig expected = new DeltaLakeConfig()
                 .setDataFileCacheSize(DataSize.succinctBytes(0))
                 .setDataFileCacheTtl(new Duration(60, MINUTES))
                 .setMetadataCacheTtl(new Duration(10, TimeUnit.MINUTES))
-                .setMetadataCacheMaxSize(10)
+                .setMetadataCacheMaxRetainedSize(DataSize.of(1, GIGABYTE))
                 .setDomainCompactionThreshold(500)
                 .setMaxOutstandingSplits(200)
                 .setMaxSplitsPerSecond(10)
@@ -153,7 +155,8 @@ public class TestDeltaLakeConfig
                 .setProjectionPushdownEnabled(false)
                 .setQueryPartitionFilterRequired(true)
                 .setDeletionVectorsEnabled(true)
-                .setDeltaLogFileSystemCacheDisabled(true);
+                .setDeltaLogFileSystemCacheDisabled(true)
+                .setMetadataParallelism(10);
 
         assertFullMapping(properties, expected);
     }

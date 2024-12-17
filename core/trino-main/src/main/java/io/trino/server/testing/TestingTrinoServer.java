@@ -30,9 +30,9 @@ import io.airlift.discovery.client.Announcer;
 import io.airlift.discovery.client.DiscoveryModule;
 import io.airlift.discovery.client.ServiceSelectorManager;
 import io.airlift.discovery.client.testing.TestingDiscoveryModule;
-import io.airlift.event.client.EventModule;
 import io.airlift.http.server.testing.TestingHttpServer;
 import io.airlift.http.server.testing.TestingHttpServerModule;
+import io.airlift.http.server.tracing.TracingServletFilter;
 import io.airlift.jaxrs.JaxrsModule;
 import io.airlift.jmx.testing.TestingJmxModule;
 import io.airlift.json.JsonModule;
@@ -75,7 +75,7 @@ import io.trino.security.AccessControl;
 import io.trino.security.AccessControlConfig;
 import io.trino.security.AccessControlManager;
 import io.trino.security.GroupProviderManager;
-import io.trino.server.GracefulShutdownHandler;
+import io.trino.server.NodeStateManager;
 import io.trino.server.PluginInstaller;
 import io.trino.server.PrefixObjectNameGeneratorModule;
 import io.trino.server.QuerySessionSupplier;
@@ -118,6 +118,7 @@ import io.trino.tracing.ForTracing;
 import io.trino.tracing.TracingAccessControl;
 import io.trino.transaction.TransactionManager;
 import io.trino.transaction.TransactionManagerModule;
+import jakarta.servlet.Filter;
 import org.weakref.jmx.guice.MBeanModule;
 
 import javax.management.MBeanServer;
@@ -159,7 +160,6 @@ public class TestingTrinoServer
         Logging logging = Logging.initialize();
         logging.setLevel("io.trino.event.QueryMonitor", Level.ERROR);
         logging.setLevel("org.eclipse.jetty", Level.ERROR);
-        logging.setLevel("org.glassfish.jersey.server.ServerRuntime$Responder", Level.OFF);
         logging.setLevel("io.airlift.concurrent.BoundedExecutor", Level.OFF);
 
         // Trino server behavior does not depend on locale settings.
@@ -209,7 +209,7 @@ public class TestingTrinoServer
     private final DispatchManager dispatchManager;
     private final SqlQueryManager queryManager;
     private final SqlTaskManager taskManager;
-    private final GracefulShutdownHandler gracefulShutdownHandler;
+    private final NodeStateManager nodeStateManager;
     private final ShutdownAction shutdownAction;
     private final MBeanServer mBeanServer;
     private final boolean coordinator;
@@ -304,7 +304,6 @@ public class TestingTrinoServer
                 .add(new PrefixObjectNameGeneratorModule("io.trino"))
                 .add(new TestingJmxModule())
                 .add(new JmxOpenMetricsModule())
-                .add(new EventModule())
                 .add(new TracingModule("trino", VERSION))
                 .add(new ServerSecurityModule())
                 .add(new CatalogManagerModule())
@@ -312,6 +311,9 @@ public class TestingTrinoServer
                 .add(new ServerMainModule(VERSION))
                 .add(new TestingWarningCollectorModule())
                 .add(binder -> {
+                    newSetBinder(binder, Filter.class)
+                            .addBinding()
+                            .to(TracingServletFilter.class);
                     binder.bind(EventListenerConfig.class).in(Scopes.SINGLETON);
                     binder.bind(AccessControlConfig.class).in(Scopes.SINGLETON);
                     binder.bind(TestingAccessControlManager.class).in(Scopes.SINGLETON);
@@ -325,7 +327,7 @@ public class TestingTrinoServer
                     binder.bind(AccessControl.class).annotatedWith(ForTracing.class).to(AccessControlManager.class).in(Scopes.SINGLETON);
                     binder.bind(AccessControl.class).to(TracingAccessControl.class).in(Scopes.SINGLETON);
                     binder.bind(ShutdownAction.class).to(TestShutdownAction.class).in(Scopes.SINGLETON);
-                    binder.bind(GracefulShutdownHandler.class).in(Scopes.SINGLETON);
+                    binder.bind(NodeStateManager.class).in(Scopes.SINGLETON);
                     binder.bind(ProcedureTester.class).in(Scopes.SINGLETON);
                     binder.bind(ExchangeManagerRegistry.class).in(Scopes.SINGLETON);
                     spanProcessor.ifPresent(processor -> newSetBinder(binder, SpanProcessor.class).addBinding().toInstance(processor));
@@ -424,7 +426,7 @@ public class TestingTrinoServer
         localMemoryManager = injector.getInstance(LocalMemoryManager.class);
         nodeManager = injector.getInstance(InternalNodeManager.class);
         serviceSelectorManager = injector.getInstance(ServiceSelectorManager.class);
-        gracefulShutdownHandler = injector.getInstance(GracefulShutdownHandler.class);
+        nodeStateManager = injector.getInstance(NodeStateManager.class);
         taskManager = injector.getInstance(SqlTaskManager.class);
         shutdownAction = injector.getInstance(ShutdownAction.class);
         mBeanServer = injector.getInstance(MBeanServer.class);
@@ -664,9 +666,9 @@ public class TestingTrinoServer
         return mBeanServer;
     }
 
-    public GracefulShutdownHandler getGracefulShutdownHandler()
+    public NodeStateManager getNodeStateManager()
     {
-        return gracefulShutdownHandler;
+        return nodeStateManager;
     }
 
     public SqlTaskManager getTaskManager()

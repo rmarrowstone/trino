@@ -125,7 +125,7 @@ implementation is used:
 * - `iceberg.dynamic-filtering.wait-timeout`
   - Maximum duration to wait for completion of dynamic filters during split
     generation.
-  - `0s`
+  - `1s`
 * - `iceberg.delete-schema-locations-fallback`
   - Whether schema locations are deleted when Trino can't determine whether
     they contain external files.
@@ -139,9 +139,10 @@ implementation is used:
 * - `iceberg.table-statistics-enabled`
   - Enable [](/optimizer/statistics). The equivalent [catalog session
     property](/sql/set-session) is `statistics_enabled` for session specific
-    use. Set to `false` to disable statistics. Disabling statistics means that
-    [](/optimizer/cost-based-optimizations) cannot make better decisions about
-    the query plan.
+    use. Set to `false` to prevent statistics usage by the
+    [](/optimizer/cost-based-optimizations) to make better decisions about the
+    query plan and therefore improve query processing performance. Setting to
+    `false` is not recommended and does not disable statistics gathering.
   - `true`
 * - `iceberg.extended-statistics.enabled`
   - Enable statistics collection with [](/sql/analyze) and use of extended
@@ -159,12 +160,6 @@ implementation is used:
 * - `iceberg.hive-catalog-name`
   - Catalog to redirect to when a Hive table is referenced.
   -
-* - `iceberg.materialized-views.storage-schema`
-  - Schema for creating materialized views storage tables. When this property is
-    not configured, storage tables are created in the same schema as the
-    materialized view definition. When the `storage_schema` materialized view
-    property is specified, it takes precedence over this catalog property.
-  - Empty
 * - `iceberg.register-table-procedure.enabled`
   - Enable to allow user to call [`register_table` procedure](iceberg-register-table).
   - `false`
@@ -197,6 +192,11 @@ implementation is used:
   - Set to `false` to disable in-memory caching of metadata files on the 
     coordinator. This cache is not used when `fs.cache.enabled` is set to true.
   - `true`
+* - `iceberg.object-store-layout.enabled`
+  - Set to `true` to enable Iceberg's [object store file layout](https://iceberg.apache.org/docs/latest/aws/#object-store-file-layout). 
+    Enabling the object store file layout appends a deterministic hash directly 
+    after the data write path.
+  - `false`
 * - `iceberg.expire-snapshots.min-retention`
   -  Minimal retention period for the
      [`expire_snapshot` command](iceberg-expire-snapshots).
@@ -223,6 +223,14 @@ implementation is used:
 * - `iceberg.split-manager-threads`
   -  Number of threads to use for generating splits.
   -  Double the number of processors on the coordinator node.
+* - `iceberg.metadata.parallelism`
+  - Number of threads used for retrieving metadata. Currently, only table loading 
+    is parallelized.
+  - `8`
+* - `iceberg.bucket-execution`
+  - Enable bucket-aware execution. This allows the engine to use physical
+    bucketing information to optimize queries by reducing data exchanges.
+  - `true`
 :::
 
 (iceberg-fte-support)=
@@ -593,51 +601,52 @@ nested directories, or `false` to ignore them.
 (iceberg-add-files)=
 #### Add files
 
-The connector can add files from tables or locations to an existing table if
-`iceberg.add-files-procedure.enabled` is set to `true` for the catalog.
+The connector can add files from tables or locations to an existing Iceberg
+table if `iceberg.add-files-procedure.enabled` is set to `true` for the catalog.
 
-Use the procedure `system.add_files_from_table` to add existing files from a
-Hive table or `system.add_files` to add existing files from a specified location
-to an existing table.
+Use the procedure `add_files_from_table` to add existing files from a Hive table
+in the current catalog, or `add_files` to add existing files from a specified
+location, to an existing Iceberg table.
  
 The data files must be the Parquet, ORC, or Avro file format.
 
-:::{warning}
-The procedure does not check if files are already present in the target table.
-:::
+The procedure adds the files to the target table, specified after `ALTER TABLE`,
+and loads them from the source table specified with the required parameters
+`schema_name` and `table_name`. The source table must be accessible in the same
+catalog as the target table and use the Hive format. The target table must use
+the Iceberg format. The catalog must use the Iceberg connector.
 
-The procedure must be called for a specific catalog `example` with the
-relevant schema and table names supplied with the required parameters
-`schema_name` and `table_name`:
+The following examples copy data from the Hive table `hive_customer_orders` in
+the `legacy` schema of the `example` catalog into the Iceberg table
+`iceberg_customer_orders` in the `lakehouse` schema of the `example` catalog:
 
 ```sql
-ALTER TABLE testdb.iceberg_customer_orders 
-EXECUTE example.system.add_files_from_table(
-    schema_name => 'testdb',
-    table_name => 'hive_customer_orders')
+ALTER TABLE example.lakehouse.iceberg_customer_orders 
+EXECUTE add_files_from_table(
+    schema_name => 'legacy',
+    table_name => 'customer_orders')
 ```
 
 Alternatively, you can set the current catalog and schema with a `USE`
-statement, and omit catalog and schema information, including the `system`
-schema for the procedure from any following `ALTER TABLE` statements:
+statement, and omit catalog and schema information:
 
 ```sql
-USE example.testdb;
+USE example.lakehouse;
 ALTER TABLE iceberg_customer_orders 
 EXECUTE add_files_from_table(
-    schema_name => 'testdb',
-    table_name => 'hive_customer_orders')
+    schema_name => 'legacy',
+    table_name => 'customer_orders')
 ```
 
-Use a `partition_filter` argument to add files from specified partitions.
-The following example adds files from a partition where the `region` is `ASIA` and
+Use a `partition_filter` argument to add files from specified partitions. The
+following example adds files from a partition where the `region` is `ASIA` and
 `country` is `JAPAN`:
 
 ```sql
-ALTER TABLE testdb.iceberg_customer_orders 
-EXECUTE example.system.add_files_from_table(
-    schema_name => 'testdb',
-    table_name => 'hive_customer_orders',
+ALTER TABLE example.lakehouse.iceberg_customer_orders 
+EXECUTE add_files_from_table(
+    schema_name => 'legacy',
+    table_name => 'customer_orders',
     partition_filter => map(ARRAY['region', 'country'], ARRAY['ASIA', 'JAPAN']))
 ```
 
@@ -645,24 +654,32 @@ In addition, you can provide a `recursive_directory` argument to migrate a
 Hive table that contains subdirectories:
 
 ```sql
-ALTER TABLE testdb.iceberg_customer_orders 
-EXECUTE example.system.add_files_from_table(
-    schema_name => 'testdb',
-    table_name => 'hive_customer_orders',
+ALTER TABLE example.lakehouse.iceberg_customer_orders 
+EXECUTE add_files_from_table(
+    schema_name => 'legacy',
+    table_name => 'customer_orders',
     recursive_directory => 'true')
 ```
 
-The default value of `recursive_directory` is `fail`, which causes the procedure 
-to throw an exception if subdirectories are found. Set the value to `true` to add 
-files from nested directories, or `false` to ignore them.
+The default value of `recursive_directory` is `fail`, which causes the procedure
+to throw an exception if subdirectories are found. Set the value to `true` to
+add files from nested directories, or `false` to ignore them.
 
-The `add_files` procedure supports adding files from a specified location.
-The procedure does not validate file schemas for compatibility with
-the target Iceberg table. The `location` property is supported for partitioned tables.
+The `add_files` procedure supports adding files, and therefore the contained
+data, to a target table, specified after `ALTER TABLE`. It loads the files from
+a object storage path specified with the required `location` parameter. The
+files must use the specified `format`, with `ORC` and `PARQUET` as valid values.
+The target Iceberg table must use the same format as the added files. The
+procedure does not validate file schemas for compatibility with the target
+Iceberg table. The `location` property is supported for partitioned tables.
+
+The following examples copy `ORC`-format files from the location
+`s3://my-bucket/a/path` into the Iceberg table `iceberg_customer_orders` in the
+`lakehouse` schema of the `example` catalog:
 
 ```sql
-ALTER TABLE testdb.iceberg_customer_orders 
-EXECUTE example.system.add_files(
+ALTER TABLE example.lakehouse.iceberg_customer_orders 
+EXECUTE add_files(
     location => 's3://my-bucket/a/path',
     format => 'ORC')
 ```
@@ -797,6 +814,8 @@ The following table properties can be updated after a table is created:
 - `format_version`
 - `partitioning`
 - `sorted_by`
+- `object_store_layout_enabled`
+- `data_location`
 
 For example, to update a table from v1 of the Iceberg specification to v2:
 
@@ -859,6 +878,11 @@ connector using a {doc}`WITH </sql/create-table-as>` clause.
   - Comma-separated list of columns to use for Parquet bloom filter. It improves
     the performance of queries using Equality and IN predicates when reading
     Parquet files. Requires Parquet format. Defaults to `[]`.
+* - `object_store_layout_enabled`
+  - Whether Iceberg's [object store file layout](https://iceberg.apache.org/docs/latest/aws/#object-store-file-layout) is enabled. 
+    Defaults to `false`. 
+* - `data_location`
+  - Optionally specifies the file system location URI for the table's data files
 * - `extra_properties`
   - Additional properties added to a Iceberg table. The properties are not used by Trino,
     and are available in the `$properties` metadata table.
@@ -1099,7 +1123,7 @@ SELECT * FROM "test_table$manifests"
 ```
 
 ```text
- path                                                                                                           | length          | partition_spec_id    | added_snapshot_id     | added_data_files_count  | added_rows_count | existing_data_files_count   | existing_rows_count | deleted_data_files_count    | deleted_rows_count | partitions
+ path                                                                                                           | length          | partition_spec_id    | added_snapshot_id     | added_data_files_count  | added_rows_count | existing_data_files_count   | existing_rows_count | deleted_data_files_count    | deleted_rows_count | partition_summaries
 ----------------------------------------------------------------------------------------------------------------+-----------------+----------------------+-----------------------+-------------------------+------------------+-----------------------------+---------------------+-----------------------------+--------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
  hdfs://hadoop-master:9000/user/hive/warehouse/test_table/metadata/faa19903-1455-4bb8-855a-61a1bbafbaa7-m0.avro |  6277           |   0                  | 7860805980949777961   | 1                       | 100              | 0                           | 0                   | 0                           | 0                  | {{contains_null=false, contains_nan= false, lower_bound=1, upper_bound=1},{contains_null=false, contains_nan= false, lower_bound=2021-01-12, upper_bound=2021-01-12}}
 ```
@@ -1148,7 +1172,7 @@ The output of the query has the following columns:
   - `BIGINT`
   - The total number of rows in all data files with status `DELETED` in the
     manifest file.
-* - `partitions`
+* - `partition_summaries`
   - `ARRAY(row(contains_null BOOLEAN, contains_nan BOOLEAN, lower_bound VARCHAR, upper_bound VARCHAR))`
   - Partition range metadata.
 :::
@@ -1240,6 +1264,13 @@ The output of the query has the following columns:
 * - `file_format`
   - `VARCHAR`
   - The format of the data file.
+* - `spec_id`
+  - `INTEGER`
+  - Spec ID used to track the file containing a row.
+* - `partition`
+  - `ROW(...)`
+  - A row that contains the mapping of the partition column names to the
+    partition column values.
 * - `record_count`
   - `BIGINT`
   - The number of entries contained in the data file.
@@ -1279,6 +1310,12 @@ The output of the query has the following columns:
 * - `equality_ids`
   - `array(INTEGER)`
   - The set of field IDs used for equality comparison in equality delete files.
+* - `sort_order_id`
+  - `INTEGER`
+  - ID representing sort order for this file.
+* - `readable_metrics`
+  - `JSON`
+  - File metrics in human-readable form.
 :::
 
 ##### `$refs` table
@@ -1639,8 +1676,7 @@ WITH ( format = 'ORC', partitioning = ARRAY['event_date'] )
 ```
 
 By default, the storage table is created in the same schema as the materialized
-view definition. The `iceberg.materialized-views.storage-schema` catalog
-configuration property or `storage_schema` materialized view property can be
+view definition. The `storage_schema` materialized view property can be
 used to specify the schema where the storage table is created.
 
 Creating a materialized view does not automatically populate it with data. You

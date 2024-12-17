@@ -115,6 +115,18 @@ catalog named `sales` using the configured connector.
 ```{include} non-transactional-insert.fragment
 ```
 
+### Non-transactional MERGE
+
+The connector supports adding rows using {doc}`MERGE statements </sql/merge>`.
+However, the connector only support merge modifying directly to the target
+table at current, to use merge you need to set the `merge.non-transactional-merge.enabled` 
+catalog property or the corresponding `non_transactional_merge_enabled` catalog session property to
+`true`.
+
+Note that with this property enabled, data can be corrupted in rare cases where
+exceptions occur during the merge operation. With transactions disabled, no
+rollback can be performed.
+
 (postgresql-fte-support)=
 ### Fault-tolerant execution support
 
@@ -213,6 +225,9 @@ this table:
 * - `ARRAY`
   - Disabled, `ARRAY`, or `JSON`
   - See [](postgresql-array-type-handling) for more information.
+* - `GEOMETRY`, `GEOMETRY(GEOMETRY TYPE, SRID)`
+  - `GEOMETRY`
+  -
 :::
 
 No other types are supported.
@@ -281,6 +296,9 @@ this table:
 * - `ARRAY`
   - `ARRAY`
   - See [](postgresql-array-type-handling) for more information.
+* - `GEOMETRY`
+  - `GEOMETRY`
+  -
 ::::
 
 No other types are supported.

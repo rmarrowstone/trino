@@ -15,12 +15,17 @@ package io.trino.plugin.iceberg.catalog.rest;
 
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.DefunctConfig;
+import io.airlift.units.Duration;
+import io.airlift.units.MinDuration;
 import jakarta.validation.constraints.NotNull;
-import org.apache.iceberg.catalog.Namespace;
 
 import java.net.URI;
 import java.util.Optional;
 
+import static java.util.concurrent.TimeUnit.MINUTES;
+
+@DefunctConfig("iceberg.rest-catalog.parent-namespace")
 public class IcebergRestCatalogConfig
 {
     public enum Security
@@ -38,10 +43,12 @@ public class IcebergRestCatalogConfig
     private URI restUri;
     private Optional<String> prefix = Optional.empty();
     private Optional<String> warehouse = Optional.empty();
-    private Namespace parentNamespace = Namespace.of();
+    private boolean nestedNamespaceEnabled;
     private Security security = Security.NONE;
     private SessionType sessionType = SessionType.NONE;
     private boolean vendedCredentialsEnabled;
+    private boolean caseInsensitiveNameMatching;
+    private Duration caseInsensitiveNameMatchingCacheTtl = new Duration(1, MINUTES);
 
     @NotNull
     public URI getBaseUri()
@@ -85,16 +92,16 @@ public class IcebergRestCatalogConfig
         return this;
     }
 
-    public Namespace getParentNamespace()
+    public boolean isNestedNamespaceEnabled()
     {
-        return parentNamespace;
+        return nestedNamespaceEnabled;
     }
 
-    @Config("iceberg.rest-catalog.parent-namespace")
-    @ConfigDescription("The parent namespace to use with the REST catalog server")
-    public IcebergRestCatalogConfig setParentNamespace(String parentNamespace)
+    @Config("iceberg.rest-catalog.nested-namespace-enabled")
+    @ConfigDescription("Support querying objects under nested namespace")
+    public IcebergRestCatalogConfig setNestedNamespaceEnabled(boolean nestedNamespaceEnabled)
     {
-        this.parentNamespace = parentNamespace == null ? Namespace.empty() : Namespace.of(parentNamespace);
+        this.nestedNamespaceEnabled = nestedNamespaceEnabled;
         return this;
     }
 
@@ -136,6 +143,34 @@ public class IcebergRestCatalogConfig
     public IcebergRestCatalogConfig setVendedCredentialsEnabled(boolean vendedCredentialsEnabled)
     {
         this.vendedCredentialsEnabled = vendedCredentialsEnabled;
+        return this;
+    }
+
+    public boolean isCaseInsensitiveNameMatching()
+    {
+        return caseInsensitiveNameMatching;
+    }
+
+    @Config("iceberg.rest-catalog.case-insensitive-name-matching")
+    @ConfigDescription("Match object names case-insensitively")
+    public IcebergRestCatalogConfig setCaseInsensitiveNameMatching(boolean caseInsensitiveNameMatching)
+    {
+        this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
+        return this;
+    }
+
+    @NotNull
+    @MinDuration("0ms")
+    public Duration getCaseInsensitiveNameMatchingCacheTtl()
+    {
+        return caseInsensitiveNameMatchingCacheTtl;
+    }
+
+    @Config("iceberg.rest-catalog.case-insensitive-name-matching.cache-ttl")
+    @ConfigDescription("Duration to keep case insensitive object mapping prior to eviction")
+    public IcebergRestCatalogConfig setCaseInsensitiveNameMatchingCacheTtl(Duration caseInsensitiveNameMatchingCacheTtl)
+    {
+        this.caseInsensitiveNameMatchingCacheTtl = caseInsensitiveNameMatchingCacheTtl;
         return this;
     }
 }

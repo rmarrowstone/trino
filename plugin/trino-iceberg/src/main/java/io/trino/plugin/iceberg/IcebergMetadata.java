@@ -163,6 +163,9 @@ import org.apache.iceberg.UpdateProperties;
 import org.apache.iceberg.UpdateSchema;
 import org.apache.iceberg.UpdateStatistics;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
+import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.CommitStateUnknownException;
+import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.expressions.Term;
@@ -197,6 +200,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -206,6 +210,7 @@ import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
@@ -250,10 +255,12 @@ import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_UNSUPPORTED_VIEW_
 import static io.trino.plugin.iceberg.IcebergMetadataColumn.FILE_MODIFIED_TIME;
 import static io.trino.plugin.iceberg.IcebergMetadataColumn.FILE_PATH;
 import static io.trino.plugin.iceberg.IcebergMetadataColumn.isMetadataColumnId;
+import static io.trino.plugin.iceberg.IcebergPartitionFunction.Transform.BUCKET;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getExpireSnapshotMinRetention;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getHiveCatalogName;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getQueryPartitionFilterRequiredSchemas;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getRemoveOrphanFilesMinRetention;
+import static io.trino.plugin.iceberg.IcebergSessionProperties.isBucketExecutionEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isCollectExtendedStatisticsOnWrite;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isExtendedStatisticsEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isIncrementalRefreshEnabled;
@@ -265,8 +272,11 @@ import static io.trino.plugin.iceberg.IcebergTableName.isDataTable;
 import static io.trino.plugin.iceberg.IcebergTableName.isIcebergTableName;
 import static io.trino.plugin.iceberg.IcebergTableName.isMaterializedViewStorage;
 import static io.trino.plugin.iceberg.IcebergTableName.tableNameFrom;
+import static io.trino.plugin.iceberg.IcebergTableProperties.DATA_LOCATION_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergTableProperties.EXTRA_PROPERTIES_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FORMAT_VERSION_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergTableProperties.OBJECT_STORE_LAYOUT_ENABLED_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.SORTED_BY_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.getPartitioning;
@@ -290,8 +300,8 @@ import static io.trino.plugin.iceberg.IcebergUtil.getTableComment;
 import static io.trino.plugin.iceberg.IcebergUtil.getTopLevelColumns;
 import static io.trino.plugin.iceberg.IcebergUtil.newCreateTableTransaction;
 import static io.trino.plugin.iceberg.IcebergUtil.schemaFromMetadata;
+import static io.trino.plugin.iceberg.IcebergUtil.verifyExtraProperties;
 import static io.trino.plugin.iceberg.PartitionFields.parsePartitionFields;
-import static io.trino.plugin.iceberg.PartitionFields.toPartitionFields;
 import static io.trino.plugin.iceberg.SortFieldUtils.parseSortFields;
 import static io.trino.plugin.iceberg.TableStatisticsReader.readNdvs;
 import static io.trino.plugin.iceberg.TableStatisticsWriter.StatsUpdateMode.INCREMENTAL_UPDATE;
@@ -353,6 +363,8 @@ import static org.apache.iceberg.SnapshotSummary.TOTAL_RECORDS_PROP;
 import static org.apache.iceberg.TableProperties.DELETE_ISOLATION_LEVEL;
 import static org.apache.iceberg.TableProperties.DELETE_ISOLATION_LEVEL_DEFAULT;
 import static org.apache.iceberg.TableProperties.FORMAT_VERSION;
+import static org.apache.iceberg.TableProperties.OBJECT_STORE_ENABLED;
+import static org.apache.iceberg.TableProperties.WRITE_DATA_LOCATION;
 import static org.apache.iceberg.TableProperties.WRITE_LOCATION_PROVIDER_IMPL;
 import static org.apache.iceberg.expressions.Expressions.alwaysTrue;
 import static org.apache.iceberg.types.TypeUtil.indexParents;
@@ -368,7 +380,15 @@ public class IcebergMetadata
     private static final int CLEANING_UP_PROCEDURES_MAX_SUPPORTED_TABLE_VERSION = 2;
     private static final String RETENTION_THRESHOLD = "retention_threshold";
     private static final String UNKNOWN_SNAPSHOT_TOKEN = "UNKNOWN";
-    public static final Set<String> UPDATABLE_TABLE_PROPERTIES = ImmutableSet.of(FILE_FORMAT_PROPERTY, FORMAT_VERSION_PROPERTY, PARTITIONING_PROPERTY, SORTED_BY_PROPERTY);
+    public static final Set<String> UPDATABLE_TABLE_PROPERTIES = ImmutableSet.<String>builder()
+            .add(EXTRA_PROPERTIES_PROPERTY)
+            .add(FILE_FORMAT_PROPERTY)
+            .add(FORMAT_VERSION_PROPERTY)
+            .add(OBJECT_STORE_LAYOUT_ENABLED_PROPERTY)
+            .add(DATA_LOCATION_PROPERTY)
+            .add(PARTITIONING_PROPERTY)
+            .add(SORTED_BY_PROPERTY)
+            .build();
 
     public static final String NUMBER_OF_DISTINCT_VALUES_NAME = "NUMBER_OF_DISTINCT_VALUES";
     private static final FunctionName NUMBER_OF_DISTINCT_VALUES_FUNCTION = new FunctionName(IcebergThetaSketchForStats.NAME);
@@ -386,6 +406,7 @@ public class IcebergMetadata
     private final Optional<HiveMetastoreFactory> metastoreFactory;
     private final boolean addFilesProcedureEnabled;
     private final Predicate<String> allowedExtraProperties;
+    private final ExecutorService executor;
 
     private final Map<IcebergTableHandle, AtomicReference<TableStatistics>> tableStatisticsCache = new ConcurrentHashMap<>();
 
@@ -401,7 +422,8 @@ public class IcebergMetadata
             TableStatisticsWriter tableStatisticsWriter,
             Optional<HiveMetastoreFactory> metastoreFactory,
             boolean addFilesProcedureEnabled,
-            Predicate<String> allowedExtraProperties)
+            Predicate<String> allowedExtraProperties,
+            ExecutorService executor)
     {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.trinoCatalogHandle = requireNonNull(trinoCatalogHandle, "trinoCatalogHandle is null");
@@ -412,6 +434,7 @@ public class IcebergMetadata
         this.metastoreFactory = requireNonNull(metastoreFactory, "metastoreFactory is null");
         this.addFilesProcedureEnabled = addFilesProcedureEnabled;
         this.allowedExtraProperties = requireNonNull(allowedExtraProperties, "allowedExtraProperties is null");
+        this.executor = requireNonNull(executor, "executor is null");
     }
 
     @Override
@@ -464,7 +487,7 @@ public class IcebergMetadata
             BaseTable storageTable = catalog.getMaterializedViewStorageTable(session, materializedViewName)
                     .orElseThrow(() -> new TrinoException(TABLE_NOT_FOUND, "Storage table metadata not found for materialized view " + tableName));
 
-            return tableHandleForCurrentSnapshot(tableName, storageTable);
+            return tableHandleForCurrentSnapshot(session, tableName, storageTable);
         }
 
         if (!isDataTable(tableName.getTableName())) {
@@ -491,18 +514,20 @@ public class IcebergMetadata
         if (endVersion.isPresent()) {
             long snapshotId = getSnapshotIdFromVersion(session, table, endVersion.get());
             return tableHandleForSnapshot(
+                    session,
                     tableName,
                     table,
                     Optional.of(snapshotId),
                     schemaFor(table, snapshotId),
                     Optional.empty());
         }
-        return tableHandleForCurrentSnapshot(tableName, table);
+        return tableHandleForCurrentSnapshot(session, tableName, table);
     }
 
-    private IcebergTableHandle tableHandleForCurrentSnapshot(SchemaTableName tableName, BaseTable table)
+    private IcebergTableHandle tableHandleForCurrentSnapshot(ConnectorSession session, SchemaTableName tableName, BaseTable table)
     {
         return tableHandleForSnapshot(
+                session,
                 tableName,
                 table,
                 Optional.ofNullable(table.currentSnapshot()).map(Snapshot::snapshotId),
@@ -511,6 +536,7 @@ public class IcebergMetadata
     }
 
     private IcebergTableHandle tableHandleForSnapshot(
+            ConnectorSession session,
             SchemaTableName tableName,
             BaseTable table,
             Optional<Long> tableSnapshotId,
@@ -534,10 +560,43 @@ public class IcebergMetadata
                 Optional.ofNullable(tableProperties.get(TableProperties.DEFAULT_NAME_MAPPING)),
                 table.location(),
                 table.properties(),
+                getTablePartitioning(session, table),
                 false,
                 Optional.empty(),
                 ImmutableSet.of(),
                 Optional.of(false));
+    }
+
+    private Optional<IcebergTablePartitioning> getTablePartitioning(ConnectorSession session, Table icebergTable)
+    {
+        if (!isBucketExecutionEnabled(session) || icebergTable.specs().size() != 1) {
+            return Optional.empty();
+        }
+        PartitionSpec partitionSpec = icebergTable.spec();
+        if (partitionSpec.fields().isEmpty()) {
+            return Optional.empty();
+        }
+
+        Schema schema = icebergTable.schema();
+
+        IcebergPartitioningHandle partitioningHandle = IcebergPartitioningHandle.create(partitionSpec, typeManager, List.of());
+
+        Map<Integer, IcebergColumnHandle> columnById = getProjectedColumns(schema, typeManager).stream()
+                .collect(toImmutableMap(IcebergColumnHandle::getId, identity()));
+        List<IcebergColumnHandle> partitionColumns = partitionSpec.fields().stream()
+                .map(PartitionField::sourceId)
+                .distinct()
+                .sorted()
+                .map(columnById::get)
+                .collect(toImmutableList());
+
+        // Partitioning is only activated if it is actually necessary for the query.
+        // This happens in applyPartitioning
+        return Optional.of(new IcebergTablePartitioning(
+                false,
+                partitioningHandle,
+                partitionColumns,
+                IntStream.range(0, partitioningHandle.partitionFunctions().size()).boxed().collect(toImmutableList())));
     }
 
     private static long getSnapshotIdFromVersion(ConnectorSession session, Table table, ConnectorTableVersion version)
@@ -635,13 +694,14 @@ public class IcebergMetadata
         return switch (tableType) {
             case DATA, MATERIALIZED_VIEW_STORAGE -> throw new VerifyException("Unexpected table type: " + tableType); // Handled above.
             case HISTORY -> Optional.of(new HistoryTable(tableName, table));
-            case METADATA_LOG_ENTRIES -> Optional.of(new MetadataLogEntriesTable(tableName, table));
-            case SNAPSHOTS -> Optional.of(new SnapshotsTable(tableName, typeManager, table));
-            case PARTITIONS -> Optional.of(new PartitionTable(tableName, typeManager, table, getCurrentSnapshotId(table)));
+            case METADATA_LOG_ENTRIES -> Optional.of(new MetadataLogEntriesTable(tableName, table, executor));
+            case SNAPSHOTS -> Optional.of(new SnapshotsTable(tableName, typeManager, table, executor));
+            case PARTITIONS -> Optional.of(new PartitionsTable(tableName, typeManager, table, getCurrentSnapshotId(table), executor));
+            case ALL_MANIFESTS -> Optional.of(new AllManifestsTable(tableName, table, executor));
             case MANIFESTS -> Optional.of(new ManifestsTable(tableName, table, getCurrentSnapshotId(table)));
-            case FILES -> Optional.of(new FilesTable(tableName, typeManager, table, getCurrentSnapshotId(table)));
+            case FILES -> Optional.of(new FilesTable(tableName, typeManager, table, getCurrentSnapshotId(table), executor));
             case PROPERTIES -> Optional.of(new PropertiesTable(tableName, table));
-            case REFS -> Optional.of(new RefsTable(tableName, table));
+            case REFS -> Optional.of(new RefsTable(tableName, table, executor));
         };
     }
 
@@ -717,10 +777,63 @@ public class IcebergMetadata
                 // can be further optimized by intersecting with partition values at the cost of iterating
                 // over all tableScan.planFiles() and caching partition values in table handle.
                 enforcedPredicate.transformKeys(ColumnHandle.class::cast),
-                // TODO: implement table partitioning
-                Optional.empty(),
+                table.getTablePartitioning().flatMap(IcebergTablePartitioning::toConnectorTablePartitioning),
                 Optional.ofNullable(discretePredicates),
+                // todo support sorting properties
                 ImmutableList.of());
+    }
+
+    @Override
+    public Optional<ConnectorTableHandle> applyPartitioning(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<ConnectorPartitioningHandle> partitioningHandle, List<ColumnHandle> partitioningColumns)
+    {
+        IcebergTableHandle icebergTableHandle = checkValidTableHandle(tableHandle);
+        if (icebergTableHandle.getPartitionSpecJson().isEmpty()) {
+            return Optional.empty();
+        }
+
+        Optional<IcebergTablePartitioning> connectorTablePartitioning = icebergTableHandle.getTablePartitioning();
+        if (connectorTablePartitioning.isEmpty()) {
+            return Optional.empty();
+        }
+        IcebergTablePartitioning tablePartitioning = connectorTablePartitioning.get();
+
+        // Check if the table can be partitioned on the requested columns
+        if (!new HashSet<>(tablePartitioning.partitioningColumns()).containsAll(partitioningColumns)) {
+            return Optional.empty();
+        }
+
+        Map<ColumnHandle, Integer> newPartitioningColumnIndex = IntStream.range(0, partitioningColumns.size()).boxed()
+                .collect(toImmutableMap(partitioningColumns::get, identity()));
+        ImmutableList.Builder<IcebergPartitionFunction> newPartitionFunctions = ImmutableList.builder();
+        ImmutableList.Builder<Integer> newPartitionStructFields = ImmutableList.builder();
+        for (int functionIndex = 0; functionIndex < tablePartitioning.partitioningHandle().partitionFunctions().size(); functionIndex++) {
+            IcebergPartitionFunction function = tablePartitioning.partitioningHandle().partitionFunctions().get(functionIndex);
+            int oldColumnIndex = function.dataPath().getFirst();
+            Integer newColumnIndex = newPartitioningColumnIndex.get(tablePartitioning.partitioningColumns().get(oldColumnIndex));
+            if (newColumnIndex != null) {
+                // Change the index of the top level column to the location in the new partitioning columns
+                newPartitionFunctions.add(function.withTopLevelColumnIndex(newColumnIndex));
+                // Some partition functions may be dropped so update the struct fields used in split partitioning must be updated
+                newPartitionStructFields.add(tablePartitioning.partitionStructFields().get(functionIndex));
+            }
+        }
+
+        IcebergPartitioningHandle newPartitioningHandle = new IcebergPartitioningHandle(false, newPartitionFunctions.build());
+        if (partitioningHandle.isPresent() && !partitioningHandle.get().equals(newPartitioningHandle)) {
+            // todo if bucketing is a power of two, we can adapt the bucketing
+            return Optional.empty();
+        }
+        if (newPartitioningHandle.partitionFunctions().stream().map(IcebergPartitionFunction::transform).noneMatch(BUCKET::equals)) {
+            // The table is only using value-based partitioning, and this can hurt performance if there is a filter
+            // on the partitioning columns. This is something we may be able to support with statistics in the future.
+            return Optional.empty();
+        }
+
+        return Optional.of(icebergTableHandle.withTablePartitioning(Optional.of(new IcebergTablePartitioning(
+                true,
+                newPartitioningHandle,
+                partitioningColumns.stream().map(IcebergColumnHandle.class::cast).collect(toImmutableList()),
+                newPartitionStructFields.build()))));
     }
 
     @Override
@@ -1045,8 +1158,10 @@ public class IcebergMetadata
 
         String tableLocation = null;
         if (replace) {
-            IcebergTableHandle table = (IcebergTableHandle) getTableHandle(session, tableMetadata.getTableSchema().getTable(), Optional.empty(), Optional.empty());
-            if (table != null) {
+            ConnectorTableHandle tableHandle = getTableHandle(session, tableMetadata.getTableSchema().getTable(), Optional.empty(), Optional.empty());
+            if (tableHandle != null) {
+                checkValidTableHandle(tableHandle);
+                IcebergTableHandle table = (IcebergTableHandle) tableHandle;
                 verifyTableVersionForUpdate(table);
                 Table icebergTable = catalog.loadTable(session, table.getSchemaTableName());
                 Optional<String> providedTableLocation = getTableLocation(tableMetadata.getProperties());
@@ -1155,7 +1270,7 @@ public class IcebergMetadata
             // Do not set partitioningHandle, to let engine determine whether to repartition data or not, on stat-based basis.
             return Optional.of(new ConnectorTableLayout(partitioningColumnNames));
         }
-        IcebergPartitioningHandle partitioningHandle = new IcebergPartitioningHandle(toPartitionFields(partitionSpec), partitioningColumns);
+        IcebergPartitioningHandle partitioningHandle = IcebergPartitioningHandle.create(partitionSpec, typeManager, List.of());
         return Optional.of(new ConnectorTableLayout(partitioningHandle, partitioningColumnNames, true));
     }
 
@@ -1756,7 +1871,7 @@ public class IcebergMetadata
             cleanExtraOutputFiles(
                     session,
                     newFiles.stream()
-                            .map(dataFile -> dataFile.path().toString())
+                            .map(ContentFile::location)
                             .collect(toImmutableSet()));
         }
 
@@ -1802,7 +1917,7 @@ public class IcebergMetadata
             commit(update, session);
             commitTransaction(transaction, operation);
         }
-        catch (UncheckedIOException | ValidationException e) {
+        catch (UncheckedIOException | ValidationException | CommitFailedException | CommitStateUnknownException e) {
             throw new TrinoException(ICEBERG_COMMIT_ERROR, format("Failed to commit during %s: %s", operation, firstNonNull(e.getMessage(), e)), e);
         }
     }
@@ -1812,7 +1927,7 @@ public class IcebergMetadata
         try {
             transaction.commitTransaction();
         }
-        catch (ValidationException e) {
+        catch (ValidationException | CommitFailedException | CommitStateUnknownException e) {
             throw new TrinoException(ICEBERG_COMMIT_ERROR, format("Failed to commit the transaction during %s: %s", operation, firstNonNull(e.getMessage(), e)), e);
         }
     }
@@ -1986,7 +2101,7 @@ public class IcebergMetadata
                 validMetadataFileNames.add(fileName(manifest.path()));
                 try (ManifestReader<? extends ContentFile<?>> manifestReader = readerForManifest(table, manifest)) {
                     for (ContentFile<?> contentFile : manifestReader) {
-                        validDataFileNames.add(fileName(contentFile.path().toString()));
+                        validDataFileNames.add(fileName(contentFile.location()));
                     }
                 }
                 catch (IOException e) {
@@ -2122,6 +2237,14 @@ public class IcebergMetadata
         beginTransaction(icebergTable);
         UpdateProperties updateProperties = transaction.updateProperties();
 
+        if (properties.containsKey(EXTRA_PROPERTIES_PROPERTY)) {
+            //noinspection unchecked
+            Map<String, String> extraProperties = (Map<String, String>) properties.get(EXTRA_PROPERTIES_PROPERTY)
+                    .orElseThrow(() -> new IllegalArgumentException("The extra_properties property cannot be empty"));
+            verifyExtraProperties(properties.keySet(), extraProperties, allowedExtraProperties);
+            extraProperties.forEach(updateProperties::set);
+        }
+
         if (properties.containsKey(FILE_FORMAT_PROPERTY)) {
             IcebergFileFormat fileFormat = (IcebergFileFormat) properties.get(FILE_FORMAT_PROPERTY)
                     .orElseThrow(() -> new IllegalArgumentException("The format property cannot be empty"));
@@ -2133,6 +2256,24 @@ public class IcebergMetadata
             int formatVersion = (int) properties.get(FORMAT_VERSION_PROPERTY)
                     .orElseThrow(() -> new IllegalArgumentException("The format_version property cannot be empty"));
             updateProperties.set(FORMAT_VERSION, Integer.toString(formatVersion));
+        }
+
+        if (properties.containsKey(OBJECT_STORE_LAYOUT_ENABLED_PROPERTY)) {
+            boolean objectStoreEnabled = (boolean) properties.get(OBJECT_STORE_LAYOUT_ENABLED_PROPERTY)
+                    .orElseThrow(() -> new IllegalArgumentException("The object_store_enabled property cannot be empty"));
+            updateProperties.set(OBJECT_STORE_ENABLED, Boolean.toString(objectStoreEnabled));
+        }
+
+        if (properties.containsKey(DATA_LOCATION_PROPERTY)) {
+            String dataLocation = (String) properties.get(DATA_LOCATION_PROPERTY)
+                    .orElseThrow(() -> new IllegalArgumentException("The data_location property cannot be empty"));
+            boolean objectStoreEnabled = (boolean) properties.getOrDefault(
+                    OBJECT_STORE_LAYOUT_ENABLED_PROPERTY,
+                    Optional.of(Boolean.parseBoolean(icebergTable.properties().get(OBJECT_STORE_ENABLED)))).orElseThrow();
+            if (!objectStoreEnabled) {
+                throw new TrinoException(INVALID_TABLE_PROPERTY, "Data location can only be set when object store layout is enabled");
+            }
+            updateProperties.set(WRITE_DATA_LOCATION, dataLocation);
         }
 
         try {
@@ -2663,7 +2804,10 @@ public class IcebergMetadata
     @Override
     public Optional<ConnectorPartitioningHandle> getUpdateLayout(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        return Optional.of(IcebergUpdateHandle.INSTANCE);
+        return getInsertLayout(session, tableHandle)
+                .flatMap(ConnectorTableLayout::getPartitioning)
+                .map(IcebergPartitioningHandle.class::cast)
+                .map(IcebergPartitioningHandle::forUpdate);
     }
 
     @Override
@@ -2723,8 +2867,10 @@ public class IcebergMetadata
         RowDelta rowDelta = transaction.newRowDelta();
         table.getSnapshotId().map(icebergTable::snapshot).ifPresent(s -> rowDelta.validateFromSnapshot(s.snapshotId()));
         TupleDomain<IcebergColumnHandle> dataColumnPredicate = table.getEnforcedPredicate().filter((column, domain) -> !isMetadataColumnId(column.getId()));
-        if (!dataColumnPredicate.isAll()) {
-            rowDelta.conflictDetectionFilter(toIcebergExpression(dataColumnPredicate));
+        TupleDomain<IcebergColumnHandle> convertibleUnenforcedPredicate = table.getUnenforcedPredicate().filter((_, domain) -> isConvertableToIcebergExpression(domain));
+        TupleDomain<IcebergColumnHandle> effectivePredicate = dataColumnPredicate.intersect(convertibleUnenforcedPredicate);
+        if (!effectivePredicate.isAll()) {
+            rowDelta.conflictDetectionFilter(toIcebergExpression(effectivePredicate));
         }
         IsolationLevel isolationLevel = IsolationLevel.fromName(icebergTable.properties().getOrDefault(DELETE_ISOLATION_LEVEL, DELETE_ISOLATION_LEVEL_DEFAULT));
         if (isolationLevel == IsolationLevel.SERIALIZABLE) {
@@ -2910,6 +3056,7 @@ public class IcebergMetadata
                 table.getNameMappingJson(),
                 table.getTableLocation(),
                 table.getStorageProperties(),
+                table.getTablePartitioning(),
                 table.isRecordScannedFiles(),
                 table.getMaxScannedFileSize(),
                 table.getConstraintColumns(),
@@ -2947,9 +3094,16 @@ public class IcebergMetadata
             Table icebergTable = catalog.loadTable(session, table.getSchemaTableName());
 
             Set<Integer> partitionSpecIds = table.getSnapshotId().map(
-                            snapshot -> icebergTable.snapshot(snapshot).allManifests(icebergTable.io()).stream()
-                                    .map(ManifestFile::partitionSpecId)
-                                    .collect(toImmutableSet()))
+                            snapshot -> {
+                                try {
+                                    return icebergTable.snapshot(snapshot).allManifests(icebergTable.io()).stream()
+                                            .map(ManifestFile::partitionSpecId)
+                                            .collect(toImmutableSet());
+                                }
+                                catch (NotFoundException | UncheckedIOException e) {
+                                    throw new TrinoException(ICEBERG_INVALID_METADATA, "Error accessing manifest file for table %s".formatted(icebergTable.name()), e);
+                                }
+                            })
                     // No snapshot, so no data. This case doesn't matter.
                     .orElseGet(() -> ImmutableSet.copyOf(icebergTable.specs().keySet()));
 
@@ -3011,6 +3165,7 @@ public class IcebergMetadata
                         table.getNameMappingJson(),
                         table.getTableLocation(),
                         table.getStorageProperties(),
+                        table.getTablePartitioning(),
                         table.isRecordScannedFiles(),
                         table.getMaxScannedFileSize(),
                         newConstraintColumns,
@@ -3161,6 +3316,7 @@ public class IcebergMetadata
                 originalHandle.getNameMappingJson(),
                 originalHandle.getTableLocation(),
                 originalHandle.getStorageProperties(),
+                Optional.empty(), // requiredTablePartitioning does not affect stats
                 false, // recordScannedFiles does not affect stats
                 originalHandle.getMaxScannedFileSize(),
                 ImmutableSet.of(), // constraintColumns do not affect stats

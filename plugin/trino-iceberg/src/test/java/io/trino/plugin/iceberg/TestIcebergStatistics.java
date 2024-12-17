@@ -172,7 +172,7 @@ public class TestIcebergStatistics
         double infoDataSize = (double) computeActual("SHOW STATS FOR " + tableName).getMaterializedRows().stream()
                 .filter(row -> "info".equals(row.getField(0)))
                 .collect(onlyElement()).getField(1);
-        assertThat(infoDataSize).isBetween(4000.0, 6000.0);
+        assertThat(infoDataSize).isBetween(2000.0, 4000.0);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
@@ -1141,6 +1141,21 @@ public class TestIcebergStatistics
                         "('regionkey', DOUBLE '5', null), " +
                         "('comment', DOUBLE '25', null), " +
                         "(null, null, DOUBLE '25')");
+    }
+
+    @Test
+    public void testNaN()
+    {
+        String tableName = "test_nan";
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 AS c1, double 'NaN' AS c2", 1);
+        assertQuery(
+                "SHOW STATS FOR " + tableName,
+                """
+                VALUES
+                  ('c1', null, 1.0, 0.0, null, 1, 1),
+                  ('c2', null, 1.0, 0.0, null, null, null),
+                  (null, null, null, null, 1.0, null, null)
+                """);
     }
 
     private long getCurrentSnapshotId(String tableName)

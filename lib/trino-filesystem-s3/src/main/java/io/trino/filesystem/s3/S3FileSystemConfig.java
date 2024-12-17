@@ -23,8 +23,10 @@ import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.airlift.units.MaxDataSize;
 import io.airlift.units.MinDataSize;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 
@@ -41,7 +43,7 @@ public class S3FileSystemConfig
 {
     public enum S3SseType
     {
-        NONE, S3, KMS
+        NONE, S3, KMS, CUSTOMER
     }
 
     public enum ObjectCannedAcl
@@ -96,6 +98,7 @@ public class S3FileSystemConfig
     private String stsRegion;
     private S3SseType sseType = S3SseType.NONE;
     private String sseKmsKeyId;
+    private String sseCustomerKey;
     private boolean useWebIdentityTokenCredentialsProvider;
     private DataSize streamingPartSize = DataSize.of(16, MEGABYTE);
     private boolean requesterPays;
@@ -115,6 +118,7 @@ public class S3FileSystemConfig
     private RetryMode retryMode = RetryMode.LEGACY;
     private int maxErrorRetries = 10;
     private boolean supportsExclusiveCreate = true;
+    private String applicationId = "Trino";
 
     public String getAwsAccessKey()
     {
@@ -320,6 +324,29 @@ public class S3FileSystemConfig
         return this;
     }
 
+    public String getSseCustomerKey()
+    {
+        return sseCustomerKey;
+    }
+
+    @Config("s3.sse.customer-key")
+    @ConfigDescription("Customer Key to use for S3 server-side encryption with Customer key (SSE-C)")
+    @ConfigSecuritySensitive
+    public S3FileSystemConfig setSseCustomerKey(String sseCustomerKey)
+    {
+        this.sseCustomerKey = sseCustomerKey;
+        return this;
+    }
+
+    @AssertTrue(message = "s3.sse.customer-key has to be set for server-side encryption with customer-provided key")
+    public boolean isSseWithCustomerKeyConfigValid()
+    {
+        if (sseType == S3SseType.CUSTOMER) {
+            return sseCustomerKey != null;
+        }
+        return true;
+    }
+
     @NotNull
     @MinDataSize("5MB")
     @MaxDataSize("256MB")
@@ -509,6 +536,21 @@ public class S3FileSystemConfig
     public S3FileSystemConfig setSupportsExclusiveCreate(boolean supportsExclusiveCreate)
     {
         this.supportsExclusiveCreate = supportsExclusiveCreate;
+        return this;
+    }
+
+    @Size(max = 50)
+    @NotNull
+    public String getApplicationId()
+    {
+        return applicationId;
+    }
+
+    @Config("s3.application-id")
+    @ConfigDescription("Suffix that will be added to HTTP User-Agent header to identify the application")
+    public S3FileSystemConfig setApplicationId(String applicationId)
+    {
+        this.applicationId = applicationId;
         return this;
     }
 }

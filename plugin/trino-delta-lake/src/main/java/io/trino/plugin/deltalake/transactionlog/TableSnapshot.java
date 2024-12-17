@@ -20,12 +20,12 @@ import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.parquet.ParquetReaderOptions;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointEntryIterator;
 import io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointSchemaManager;
 import io.trino.plugin.deltalake.transactionlog.checkpoint.LastCheckpoint;
 import io.trino.plugin.deltalake.transactionlog.checkpoint.TransactionLogTail;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.SchemaTableName;
@@ -43,6 +43,9 @@ import java.util.stream.Stream;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.Streams.stream;
+import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
+import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_FILESYSTEM_ERROR;
 import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_INVALID_SCHEMA;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogParser.readLastCheckpoint;
@@ -60,6 +63,8 @@ import static java.util.Objects.requireNonNull;
  */
 public class TableSnapshot
 {
+    private static final int INSTANCE_SIZE = instanceSize(TableSnapshot.class);
+
     private final Optional<LastCheckpoint> lastCheckpoint;
     private final SchemaTableName table;
     private final TransactionLogTail logTail;
@@ -180,6 +185,16 @@ public class TableSnapshot
     public List<Transaction> getTransactions()
     {
         return logTail.getTransactions();
+    }
+
+    public long getRetainedSizeInBytes()
+    {
+        return INSTANCE_SIZE
+                + sizeOf(lastCheckpoint, LastCheckpoint::getRetainedSizeInBytes)
+                + table.getRetainedSizeInBytes()
+                + logTail.getRetainedSizeInBytes()
+                + estimatedSizeOf(tableLocation)
+                + sizeOf(cachedMetadata, MetadataEntry::getRetainedSizeInBytes);
     }
 
     public Stream<DeltaLakeTransactionLogEntry> getCheckpointTransactionLogEntries(

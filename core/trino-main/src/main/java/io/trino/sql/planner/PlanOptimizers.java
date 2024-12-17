@@ -111,6 +111,7 @@ import io.trino.sql.planner.iterative.rule.PruneMarkDistinctColumns;
 import io.trino.sql.planner.iterative.rule.PruneMergeSourceColumns;
 import io.trino.sql.planner.iterative.rule.PruneOffsetColumns;
 import io.trino.sql.planner.iterative.rule.PruneOrderByInAggregation;
+import io.trino.sql.planner.iterative.rule.PruneOrderByInWindowAggregation;
 import io.trino.sql.planner.iterative.rule.PruneOutputSourceColumns;
 import io.trino.sql.planner.iterative.rule.PrunePattenRecognitionColumns;
 import io.trino.sql.planner.iterative.rule.PrunePatternRecognitionSourceColumns;
@@ -460,6 +461,7 @@ public class PlanOptimizers
                                         new MergeLimitWithDistinct(),
                                         new PruneCountAggregationOverScalar(metadata),
                                         new PruneOrderByInAggregation(metadata),
+                                        new PruneOrderByInWindowAggregation(metadata),
                                         new RewriteSpatialPartitioningAggregation(plannerContext),
                                         new SimplifyCountOverConstant(plannerContext),
                                         new PreAggregateCaseAggregations(plannerContext),
@@ -903,7 +905,7 @@ public class PlanOptimizers
             // unalias symbols before adding exchanges to use same partitioning symbols in joins, aggregations and other
             // operators that require node partitioning
             builder.add(new UnaliasSymbolReferences());
-            builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new AddExchanges(plannerContext, statsCalculator, taskCountEstimator)));
+            builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new AddExchanges(plannerContext, statsCalculator, taskCountEstimator, nodePartitioningManager)));
             // It can only run after AddExchanges since it estimates the hash partition count for all remote exchanges
             builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new DeterminePartitionCount(statsCalculator, taskCountEstimator)));
         }
@@ -998,11 +1000,13 @@ public class PlanOptimizers
                 ruleStats,
                 statsCalculator,
                 costCalculator,
-                ImmutableSet.of(
-                        new PushPartialAggregationThroughJoin(),
-                        new PushPartialAggregationThroughExchange(plannerContext),
-                        new PruneJoinColumns(),
-                        new PruneJoinChildrenColumns())));
+                ImmutableSet.<Rule<?>>builder()
+                        .addAll(new PushPartialAggregationThroughJoin().rules())
+                        .add(new PushPartialAggregationThroughExchange(plannerContext),
+                                new PruneJoinColumns(),
+                                new PruneJoinChildrenColumns(),
+                                new RemoveRedundantIdentityProjections())
+                        .build()));
         builder.add(new IterativeOptimizer(
                 plannerContext,
                 ruleStats,

@@ -20,8 +20,8 @@ import io.trino.server.ExternalUriInfo;
 import io.trino.server.protocol.spooling.SpoolingConfig.SegmentRetrievalMode;
 import io.trino.server.security.ResourceSecurity;
 import io.trino.spi.HostAddress;
-import io.trino.spi.protocol.SpooledSegmentHandle;
-import io.trino.spi.protocol.SpoolingManager;
+import io.trino.spi.spool.SpooledSegmentHandle;
+import io.trino.spi.spool.SpoolingManager;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -36,7 +36,6 @@ import jakarta.ws.rs.core.UriInfo;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.OptionalInt;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static com.google.common.base.Verify.verify;
@@ -85,7 +84,7 @@ public class CoordinatorSegmentResource
             }
             case COORDINATOR_STORAGE_REDIRECT -> Response
                     .seeOther(spoolingManager
-                            .directLocation(handle, OptionalInt.empty()).orElseThrow(() -> new ServiceUnavailableException("Could not generate pre-signed URI"))
+                            .directLocation(handle).orElseThrow(() -> new ServiceUnavailableException("Could not generate pre-signed URI"))
                             .directUri())
                     .build();
         };

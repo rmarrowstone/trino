@@ -207,11 +207,11 @@ public class TracingConnectorMetadata
     }
 
     @Override
-    public ConnectorTableHandle makeCompatiblePartitioning(ConnectorSession session, ConnectorTableHandle tableHandle, ConnectorPartitioningHandle partitioningHandle)
+    public Optional<ConnectorTableHandle> applyPartitioning(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<ConnectorPartitioningHandle> partitioningHandle, List<ColumnHandle> columns)
     {
-        Span span = startSpan("makeCompatiblePartitioning", tableHandle);
+        Span span = startSpan("applyPartitioning", tableHandle);
         try (var _ = scopedSpan(span)) {
-            return delegate.makeCompatiblePartitioning(session, tableHandle, partitioningHandle);
+            return delegate.applyPartitioning(session, tableHandle, partitioningHandle, columns);
         }
     }
 
@@ -767,6 +767,15 @@ public class TracingConnectorMetadata
         Span span = startSpan("beginMerge", tableHandle);
         try (var _ = scopedSpan(span)) {
             return delegate.beginMerge(session, tableHandle, retryMode);
+        }
+    }
+
+    @Override
+    public ConnectorMergeTableHandle beginMerge(ConnectorSession session, ConnectorTableHandle tableHandle, Map<Integer, Collection<ColumnHandle>> updateCaseColumns, RetryMode retryMode)
+    {
+        Span span = startSpan("beginMerge", tableHandle);
+        try (var _ = scopedSpan(span)) {
+            return delegate.beginMerge(session, tableHandle, updateCaseColumns, retryMode);
         }
     }
 

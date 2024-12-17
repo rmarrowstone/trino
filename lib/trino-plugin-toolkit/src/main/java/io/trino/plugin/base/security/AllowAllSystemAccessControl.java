@@ -61,7 +61,7 @@ public class AllowAllSystemAccessControl
         }
 
         @Override
-        public SystemAccessControl create(Map<String, String> config)
+        public SystemAccessControl create(Map<String, String> config, SystemAccessControlContext context)
         {
             checkArgument(config.isEmpty(), "This access controller does not support any configuration properties");
             return INSTANCE;
@@ -81,9 +81,6 @@ public class AllowAllSystemAccessControl
     public void checkCanWriteSystemInformation(Identity identity) {}
 
     @Override
-    public void checkCanExecuteQuery(Identity identity) {}
-
-    @Override
     public void checkCanExecuteQuery(Identity identity, QueryId queryId) {}
 
     @Override
@@ -97,9 +94,6 @@ public class AllowAllSystemAccessControl
     {
         return queryOwners;
     }
-
-    @Override
-    public void checkCanSetSystemSessionProperty(Identity identity, String propertyName) {}
 
     @Override
     public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName) {}

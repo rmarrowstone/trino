@@ -64,10 +64,10 @@ are also available. They are discussed later in this topic.
     missing to prevent future metastore calls.
   - `false`
 * - `hive.metastore-cache-ttl`
-  - Duration of how long cached metastore data is considered valid.
+  - [Duration](prop-type-duration) of how long cached metastore data is considered valid.
   - `0s`
 * - `hive.metastore-stats-cache-ttl`
-  - Duration of how long cached metastore statistics are considered valid.
+  - [Duration](prop-type-duration) of how long cached metastore statistics are considered valid.
   - `5m`
 * - `hive.metastore-cache-maximum-size`
   - Maximum number of metastore data objects in the Hive metastore cache.
@@ -80,6 +80,14 @@ are also available. They are discussed later in this topic.
 * - `hive.metastore-refresh-max-threads`
   - Maximum threads used to refresh cached metastore data.
   - `10`
+* - `hive.user-metastore-cache-ttl`
+  - [Duration](prop-type-duration) of how long cached metastore statistics, which are user specific
+    in user impersonation scenarios, are considered valid.
+  - `10s`
+* - `hive.user-metastore-cache-maximum-size`
+  - Maximum number of metastore data objects in the Hive metastore cache,
+    which are user specific in user impersonation scenarios.
+  - `1000`
 * - `hive.hide-delta-lake-tables`
   - Controls whether to hide Delta Lake tables in table listings. Currently
     applies only when using the AWS Glue metastore.
@@ -476,9 +484,6 @@ following properties:
 * - `iceberg.rest-catalog.warehouse`
   - Warehouse identifier/location for the catalog (optional). Example:
     `s3://my_bucket/warehouse_location`
-* - `iceberg.rest-catalog.parent-namespace`
-  - The namespace to use with the REST catalog server. Example:
-    `main`
 * - `iceberg.rest-catalog.security`
   - The type of security to use (default: `NONE`).  `OAUTH2` requires either a
     `token` or `credential`. Example: `OAUTH2`
@@ -500,6 +505,14 @@ following properties:
 * - `iceberg.rest-catalog.vended-credentials-enabled`
   - Use credentials provided by the REST backend for file system access.
     Defaults to `false`.
+* - `iceberg.rest-catalog.nested-namespace-enabled`
+  - Support querying objects under nested namespace.
+    Defaults to `false`.
+* - `iceberg.rest-catalog.case-insensitive-name-matching`
+  - Match namespace, table, and view names case insensitively. Defaults to `false`.
+* - `iceberg.rest-catalog.case-insensitive-name-matching.cache-ttl`
+  - [Duration](prop-type-duration) for which case-insensitive namespace, table, 
+    and view names are cached. Defaults to `1m`.
   :::
 
 The following example shows a minimal catalog configuration using an Iceberg
@@ -521,7 +534,6 @@ iceberg.rest-catalog.uri=https://dbc-12345678-9999.cloud.databricks.com/api/2.1/
 iceberg.security=read_only
 iceberg.rest-catalog.security=OAUTH2
 iceberg.rest-catalog.oauth2.token=***
-iceberg.rest-catalog.parent-namespace=test_namespace
 ```
 
 The REST catalog supports [view management](sql-view-management) 
@@ -560,6 +572,14 @@ directory.
 * - `iceberg.jdbc-catalog.schema-version`
   - JDBC catalog schema version.
     Valid values are `V0` or `V1`. Defaults to `V1`.
+* - `iceberg.jdbc-catalog.retryable-status-codes`
+  - On connection error to JDBC metastore, retry if
+    it is one of these JDBC status codes.
+    Valid value is a comma-separated list of status codes.
+    Note: JDBC catalog always retries the following status
+    codes: `08000,08003,08006,08007,40001`. Specify only
+    additional codes (such as `57000,57P03,57P04` if using
+    PostgreSQL driver) here.
 :::
 
 :::{warning}

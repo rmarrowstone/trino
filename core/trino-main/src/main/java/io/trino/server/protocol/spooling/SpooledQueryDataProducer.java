@@ -76,7 +76,8 @@ public class SpooledQueryDataProducer
                             .set(ROW_OFFSET, currentOffset)
                             .build();
                     builder.withSegment(spooled(
-                            metadata.directUri().orElseGet(() -> buildSegmentDownloadURI(uriBuilder, metadata.identifier())),
+                            metadata.directUri()
+                                    .orElseGet(() -> buildSegmentDownloadURI(uriBuilder, metadata.identifier())),
                             buildSegmentAckURI(uriBuilder, metadata.identifier()),
                             attributes,
                             metadata.headers()));
