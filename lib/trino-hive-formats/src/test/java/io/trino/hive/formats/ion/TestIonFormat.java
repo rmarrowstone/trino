@@ -25,6 +25,7 @@ import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.CharType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.MapType;
@@ -36,6 +37,7 @@ import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.SqlVarbinary;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TypeOperators;
+import io.trino.spi.type.VarcharType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -152,6 +154,24 @@ public class TestIonFormat
                 assertValues(rowType, ion, List.of());
             });
         }
+    }
+
+    @Test
+    public void testTextTruncation()
+            throws IOException
+    {
+        String ionText = """
+                { my_text: 'abcdefghijk' }
+                { my_text: 'abcd    ' }
+                { my_text: 'abcd    ijk' }""";
+
+        assertValues(RowType.rowType(field("my_text", VarcharType.createVarcharType(8))),
+                ionText,
+                List.of("abcdefgh"), List.of("abcd    "), List.of("abcd    "));
+
+        assertValues(RowType.rowType(field("my_text", CharType.createCharType(8))),
+                ionText,
+                List.of("abcdefgh"), List.of("abcd    "), List.of("abcd    "));
     }
 
     @Test

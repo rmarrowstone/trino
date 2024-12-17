@@ -33,6 +33,7 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.CharType;
+import io.trino.spi.type.Chars;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
@@ -50,6 +51,7 @@ import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
+import io.trino.spi.type.Varchars;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -125,8 +127,8 @@ public class IonDecoderFactory
             case BooleanType t -> wrapDecoder(boolDecoder, t, IonType.BOOL);
             case DateType t -> wrapDecoder(dateDecoder, t, IonType.TIMESTAMP);
             case TimestampType t -> wrapDecoder(timestampDecoder(t), t, IonType.TIMESTAMP);
-            case VarcharType t -> wrapDecoder(stringDecoder, t, IonType.STRING, IonType.SYMBOL);
-            case CharType t -> wrapDecoder(stringDecoder, t, IonType.STRING, IonType.SYMBOL);
+            case VarcharType t -> wrapDecoder(varcharDecoder(t), t, IonType.STRING, IonType.SYMBOL);
+            case CharType t -> wrapDecoder(charDecoder(t), t, IonType.STRING, IonType.SYMBOL);
             case VarbinaryType t -> wrapDecoder(binaryDecoder, t, IonType.BLOB, IonType.CLOB);
             case RowType t -> wrapDecoder(RowDecoder.forFields(t.getFields()), t, IonType.STRUCT);
             case ArrayType t -> wrapDecoder(new ArrayDecoder(decoderForType(t.getElementType())), t, IonType.LIST, IonType.SEXP);
@@ -358,6 +360,18 @@ public class IonDecoderFactory
         };
     }
 
+    private static BlockDecoder varcharDecoder(VarcharType type)
+    {
+        return (ionReader, blockBuilder) ->
+                type.writeSlice(blockBuilder, Varchars.truncateToLength(Slices.utf8Slice(ionReader.stringValue()), type));
+    }
+
+    private static BlockDecoder charDecoder(CharType type)
+    {
+        return (ionReader, blockBuilder) ->
+                type.writeSlice(blockBuilder, Chars.truncateToLengthAndTrimSpaces(Slices.utf8Slice(ionReader.stringValue()), type));
+    }
+
     private static final BlockDecoder byteDecoder = (ionReader, blockBuilder) ->
             TinyintType.TINYINT.writeLong(blockBuilder, readLong(ionReader));
 
@@ -393,9 +407,6 @@ public class IonDecoderFactory
 
     private static final BlockDecoder floatDecoder = (ionReader, blockBuilder) ->
             DoubleType.DOUBLE.writeDouble(blockBuilder, ionReader.doubleValue());
-
-    private static final BlockDecoder stringDecoder = (ionReader, blockBuilder) ->
-            VarcharType.VARCHAR.writeSlice(blockBuilder, Slices.utf8Slice(ionReader.stringValue()));
 
     private static final BlockDecoder boolDecoder = (ionReader, blockBuilder) ->
             BooleanType.BOOLEAN.writeBoolean(blockBuilder, ionReader.booleanValue());
