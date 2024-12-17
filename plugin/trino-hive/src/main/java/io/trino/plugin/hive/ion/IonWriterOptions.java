@@ -28,7 +28,9 @@ public final class IonWriterOptions
 {
     public static final String ION_ENCODING_PROPERTY = "ion.encoding";
     public static final String ION_TIMESTAMP_OFFSET_PROPERTY = "ion.timestamp.serialization_offset";
+    public static final String ION_TIMESTAMP_OFFSET_DEFAULT = "Z";
     public static final String ION_SERIALIZATION_AS_NULL_PROPERTY = "ion.serialize_null";
+    public static final String ION_SERIALIZATION_AS_NULL_DEFAULT = "OMIT";
     public static final String ION_SERIALIZATION_AS_PROPERTY = "ion.\\w+.serialize_as";
 
     public static final String TEXT_ENCODING = "text";

@@ -15,6 +15,7 @@ package io.trino.plugin.hive.ion;
 
 import com.amazon.ion.IonReader;
 import com.amazon.ion.system.IonReaderBuilder;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.CountingInputStream;
 import com.google.inject.Inject;
@@ -44,6 +45,7 @@ import io.trino.spi.predicate.TupleDomain;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -56,12 +58,17 @@ import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
 import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY;
+import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY_DEFAULT;
 import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY_WITH_COLUMN;
 import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED;
+import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED_DEFAULT;
 import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY;
+import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT;
 import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTOR_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_NULL_DEFAULT;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_NULL_PROPERTY;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_TIMESTAMP_OFFSET_DEFAULT;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_TIMESTAMP_OFFSET_PROPERTY;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
 
@@ -72,15 +79,17 @@ public class IonPageSourceFactory
     // this is used as a feature flag to enable Ion native trino integration
     private final boolean nativeTrinoEnabled;
 
-    private static final Set<String> UNSUPPORTED_SERDE_PROPERTIES = ImmutableSet.of(
-            FAIL_ON_OVERFLOW_PROPERTY,
-            FAIL_ON_OVERFLOW_PROPERTY_WITH_COLUMN,
-            PATH_EXTRACTOR_PROPERTY,
-            PATH_EXTRACTION_CASE_SENSITIVITY,
-            IGNORE_MALFORMED,
-            ION_TIMESTAMP_OFFSET_PROPERTY,
-            ION_SERIALIZATION_AS_NULL_PROPERTY,
-            ION_SERIALIZATION_AS_PROPERTY);
+    private static final Map<String, String> EXACT_PROPERTIES = ImmutableMap.of(
+            FAIL_ON_OVERFLOW_PROPERTY, FAIL_ON_OVERFLOW_PROPERTY_DEFAULT,
+            IGNORE_MALFORMED, IGNORE_MALFORMED_DEFAULT,
+            PATH_EXTRACTION_CASE_SENSITIVITY, PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT,
+            ION_TIMESTAMP_OFFSET_PROPERTY, ION_TIMESTAMP_OFFSET_DEFAULT,
+            ION_SERIALIZATION_AS_NULL_PROPERTY, ION_SERIALIZATION_AS_NULL_DEFAULT);
+
+    private static final Set<Pattern> PATTERN_PROPERTIES = ImmutableSet.of(
+            Pattern.compile(FAIL_ON_OVERFLOW_PROPERTY_WITH_COLUMN),
+            Pattern.compile(ION_SERIALIZATION_AS_PROPERTY),
+            Pattern.compile(PATH_EXTRACTOR_PROPERTY));
 
     @Inject
     public IonPageSourceFactory(TrinoFileSystemFactory trinoFileSystemFactory, HiveConfig hiveConfig)
@@ -111,7 +120,7 @@ public class IonPageSourceFactory
             return Optional.empty();
         }
 
-        if (schema.serdeProperties().entrySet().stream().anyMatch(entry -> isUnsupportedProperty(entry.getKey()))) {
+        if (schema.serdeProperties().entrySet().stream().filter(entry -> entry.getKey().startsWith("ion.")).anyMatch(this::isUnsupportedProperty)) {
             return Optional.empty();
         }
 
@@ -174,14 +183,19 @@ public class IonPageSourceFactory
         }
     }
 
-    private boolean isUnsupportedProperty(String property)
+    private boolean isUnsupportedProperty(Map.Entry<String, String> entry)
     {
-        return UNSUPPORTED_SERDE_PROPERTIES.stream()
-                .anyMatch(pattern -> {
-                    if (pattern.contains("\\w+")) {
-                        return Pattern.compile(pattern).matcher(property).matches();
-                    }
-                    return pattern.equals(property);
-                });
+        String key = entry.getKey();
+        String value = entry.getValue();
+
+        // Check exact matches
+        String propertyDefault = EXACT_PROPERTIES.get(key);
+        if (propertyDefault != null) {
+            return !propertyDefault.equals(value);
+        }
+
+        // Check pattern matches
+        return PATTERN_PROPERTIES.stream()
+                .anyMatch(pattern -> pattern.matcher(key).matches());
     }
 }

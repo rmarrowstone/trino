@@ -42,11 +42,12 @@ import io.trino.testing.MaterializedResult;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.AbstractMap;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -54,6 +55,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static io.trino.plugin.hive.HivePageSourceProvider.ColumnMapping.buildColumnMappings;
 import static io.trino.plugin.hive.HiveStorageFormat.ION;
@@ -62,11 +64,16 @@ import static io.trino.plugin.hive.HiveTestUtils.projectedColumn;
 import static io.trino.plugin.hive.HiveTestUtils.toHiveBaseColumnHandle;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
 import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY;
+import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY_DEFAULT;
 import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED;
+import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED_DEFAULT;
 import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY;
+import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT;
 import static io.trino.plugin.hive.ion.IonWriterOptions.BINARY_ENCODING;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_ENCODING_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_NULL_DEFAULT;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_NULL_PROPERTY;
+import static io.trino.plugin.hive.ion.IonWriterOptions.ION_TIMESTAMP_OFFSET_DEFAULT;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_TIMESTAMP_OFFSET_PROPERTY;
 import static io.trino.plugin.hive.ion.IonWriterOptions.TEXT_ENCODING;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
@@ -168,26 +175,58 @@ public class IonPageSourceSmokeTest
         Assertions.assertTrue(connectorPageSource.isEmpty(), "Expected empty page source when native Trino is disabled");
     }
 
+    private static Stream<Map.Entry<String, String>> propertiesWithDefaults()
+    {
+        return Stream.of(
+                entry(FAIL_ON_OVERFLOW_PROPERTY, FAIL_ON_OVERFLOW_PROPERTY_DEFAULT),
+                entry(PATH_EXTRACTION_CASE_SENSITIVITY, PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT),
+                entry(IGNORE_MALFORMED, IGNORE_MALFORMED_DEFAULT),
+                entry(ION_TIMESTAMP_OFFSET_PROPERTY, ION_TIMESTAMP_OFFSET_DEFAULT),
+                entry(ION_SERIALIZATION_AS_NULL_PROPERTY, ION_SERIALIZATION_AS_NULL_DEFAULT));
+    }
+
+    private static Stream<Map.Entry<String, String>> propertiesWithValues()
+    {
+        return Stream.of(
+                entry(FAIL_ON_OVERFLOW_PROPERTY, "false"),
+                entry(PATH_EXTRACTION_CASE_SENSITIVITY, "true"),
+                entry(IGNORE_MALFORMED, "true"),
+                entry(ION_TIMESTAMP_OFFSET_PROPERTY, "01:00"),
+                entry(ION_SERIALIZATION_AS_NULL_PROPERTY, "TYPED"),
+                // These entries represent column-specific properties that are not supported.
+                // Any presence of these properties in the schema will result in an empty PageSource,
+                // regardless of their assigned values.
+                entry("ion.foo.fail_on_overflow", "property_value"),
+                entry("ion.foo.serialize_as", "property_value"),
+                entry("ion.foo.path_extractor", "property_value"));
+    }
+
+    private static Map.Entry<String, String> entry(String key, String value)
+    {
+        return new AbstractMap.SimpleEntry<>(key, value);
+    }
+
     @ParameterizedTest
-    @ValueSource(strings = {
-            "ion.foo.fail_on_overflow",
-            "ion.foo.path_extractor",
-            "ion.bar.serialize_as",
-            FAIL_ON_OVERFLOW_PROPERTY,
-            PATH_EXTRACTION_CASE_SENSITIVITY,
-            IGNORE_MALFORMED,
-            ION_TIMESTAMP_OFFSET_PROPERTY,
-            ION_SERIALIZATION_AS_NULL_PROPERTY,
-    })
-    void testUnsupportedProperties(String property)
+    @MethodSource("propertiesWithValues")
+    void testPropertiesWithValues(Map.Entry<String, String> property)
             throws IOException
     {
         TestFixture fixture = new TestFixture(FOO_BAR_COLUMNS)
-                .withUnsupportedProperties(property);
+                .withSerdeProperties(property);
         fixture.writeIonTextFile("{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }");
 
         Optional<ConnectorPageSource> connectorPageSource = fixture.getOptionalPageSource();
         Assertions.assertTrue(connectorPageSource.isEmpty(), "Expected empty page source when there are unsupported Serde properties");
+    }
+
+    @ParameterizedTest
+    @MethodSource("propertiesWithDefaults")
+    void testPropertiesWithDefaults(Map.Entry<String, String> propertyEntry)
+            throws IOException
+    {
+        TestFixture fixture = new TestFixture(FOO_BAR_COLUMNS)
+                .withSerdeProperties(propertyEntry);
+        fixture.assertRowCount("{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }", 2);
     }
 
     @Test
@@ -296,10 +335,10 @@ public class IonPageSourceSmokeTest
             return this;
         }
 
-        TestFixture withUnsupportedProperties(String property)
+        TestFixture withSerdeProperties(Map.Entry<String, String> propertyEntry)
         {
             // The value of the property is just placeholder
-            tableProperties.put(property, "property_value");
+            tableProperties.put(propertyEntry.getKey(), propertyEntry.getValue());
             return this;
         }
 
