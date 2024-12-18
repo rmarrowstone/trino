@@ -79,14 +79,14 @@ public class IonPageSourceFactory
     // this is used as a feature flag to enable Ion native trino integration
     private final boolean nativeTrinoEnabled;
 
-    private static final Map<String, String> EXACT_PROPERTIES = ImmutableMap.of(
+    private static final Map<String, String> TABLE_PROPERTIES = ImmutableMap.of(
             FAIL_ON_OVERFLOW_PROPERTY, FAIL_ON_OVERFLOW_PROPERTY_DEFAULT,
             IGNORE_MALFORMED, IGNORE_MALFORMED_DEFAULT,
             PATH_EXTRACTION_CASE_SENSITIVITY, PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT,
             ION_TIMESTAMP_OFFSET_PROPERTY, ION_TIMESTAMP_OFFSET_DEFAULT,
             ION_SERIALIZATION_AS_NULL_PROPERTY, ION_SERIALIZATION_AS_NULL_DEFAULT);
 
-    private static final Set<Pattern> PATTERN_PROPERTIES = ImmutableSet.of(
+    private static final Set<Pattern> COLUMN_PROPERTIES = ImmutableSet.of(
             Pattern.compile(FAIL_ON_OVERFLOW_PROPERTY_WITH_COLUMN),
             Pattern.compile(ION_SERIALIZATION_AS_PROPERTY),
             Pattern.compile(PATH_EXTRACTOR_PROPERTY));
@@ -188,14 +188,14 @@ public class IonPageSourceFactory
         String key = entry.getKey();
         String value = entry.getValue();
 
-        // Check exact matches
-        String propertyDefault = EXACT_PROPERTIES.get(key);
+        String propertyDefault = TABLE_PROPERTIES.get(key);
         if (propertyDefault != null) {
             return !propertyDefault.equals(value);
         }
 
-        // Check pattern matches
-        return PATTERN_PROPERTIES.stream()
+        // For now, any column-specific properties result in an empty PageSource
+        // since they have no default values for comparison.
+        return COLUMN_PROPERTIES.stream()
                 .anyMatch(pattern -> pattern.matcher(key).matches());
     }
 }
