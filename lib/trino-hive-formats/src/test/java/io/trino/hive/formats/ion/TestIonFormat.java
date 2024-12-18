@@ -436,6 +436,17 @@ public class TestIonFormat
     }
 
     @Test
+    public void testEncodeMixedCaseColumn()
+            throws IOException
+    {
+        List<Column> casedColumn = List.of(
+                new Column("TheAnswer", INTEGER, 0));
+
+        Page page = toPage(casedColumn, List.of(42));
+        assertIonEquivalence(casedColumn, page, "{ TheAnswer: 42 }");
+    }
+
+    @Test
     public void testEncodeWithNullField()
             throws IOException
     {
