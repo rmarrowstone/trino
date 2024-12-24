@@ -56,6 +56,7 @@ import io.trino.spi.type.Varchars;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -127,8 +128,8 @@ public class IonDecoderFactory
             case BooleanType t -> wrapDecoder(boolDecoder, t, IonType.BOOL);
             case DateType t -> wrapDecoder(dateDecoder, t, IonType.TIMESTAMP);
             case TimestampType t -> wrapDecoder(timestampDecoder(t), t, IonType.TIMESTAMP);
-            case VarcharType t -> wrapDecoder(varcharDecoder(t), t, IonType.STRING, IonType.SYMBOL);
-            case CharType t -> wrapDecoder(charDecoder(t), t, IonType.STRING, IonType.SYMBOL);
+            case VarcharType t -> wrapDecoderWithTextCoercion(varcharDecoder(t), t, IonType.STRING, IonType.SYMBOL);
+            case CharType t -> wrapDecoderWithTextCoercion(charDecoder(t), t, IonType.STRING, IonType.SYMBOL);
             case VarbinaryType t -> wrapDecoder(binaryDecoder, t, IonType.BLOB, IonType.CLOB);
             case RowType t -> wrapDecoder(RowDecoder.forFields(t.getFields()), t, IonType.STRUCT);
             case ArrayType t -> wrapDecoder(new ArrayDecoder(decoderForType(t.getElementType())), t, IonType.LIST, IonType.SEXP);
@@ -149,13 +150,52 @@ public class IonDecoderFactory
     private static BlockDecoder wrapDecoder(BlockDecoder decoder, Type trinoType, IonType... allowedTypes)
     {
         Set<IonType> allowedWithNull = new HashSet<>(Arrays.asList(allowedTypes));
+        return createConfigurableDecoder(decoder, trinoType, false, allowedTypes);
+    }
+
+    /**
+     * Wraps decoders for common handling logic.
+     * <p>
+     * Handles un-typed and correctly typed null values.
+     * Throws for mistyped values, whether null or not.
+     * Delegates to Decoder for correctly-typed, non-null values.
+     * Handles text coercion for Varchar and Char types.
+     * <p>
+     * This code treats all values as nullable.
+     */
+    private static BlockDecoder wrapDecoderWithTextCoercion(BlockDecoder decoder, Type trinoType, IonType... allowedTypes)
+    {
+        return createConfigurableDecoder(decoder, trinoType, true, allowedTypes);
+    }
+
+    /**
+     * Wraps decoders for common handling logic.
+     * <p>
+     * Handles un-typed and correctly typed null values.
+     * Throws for mistyped values, whether null or not.
+     * Delegates to Decoder for correctly-typed, non-null values.
+     * Handles text coercion for Varchar and Char types.
+     * <p>
+     * This code treats all values as nullable.
+     */
+    private static BlockDecoder createConfigurableDecoder(BlockDecoder decoder, Type trinoType, boolean textCoercion,
+                                                          IonType... allowedTypes)
+    {
+        final Set<IonType> allowedWithNull = new HashSet<>(Arrays.asList(allowedTypes));
         allowedWithNull.add(IonType.NULL);
 
         return (reader, builder) -> {
             final IonType ionType = reader.getType();
             if (!allowedWithNull.contains(ionType)) {
-                throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
-                        "Cannot coerce IonType %s to Trino type %s".formatted(ionType, trinoType));
+                if (textCoercion) {
+                    String coercedValue = coerceToString(reader, ionType);
+                    VarcharType.VARCHAR.writeSlice(builder, Slices.utf8Slice(coercedValue));
+                    return;
+                }
+                else {
+                    throw new TrinoException(StandardErrorCode.GENERIC_USER_ERROR,
+                            "Cannot coerce IonType %s to Trino type %s".formatted(ionType, trinoType));
+                }
             }
             if (reader.isNullValue()) {
                 builder.appendNull();
@@ -164,6 +204,65 @@ public class IonDecoderFactory
                 decoder.decode(reader, builder);
             }
         };
+    }
+
+    /**
+     * Coerces an Ion value to its string representation.
+     *
+     * This method handles all IonTypes and converts them to a string format.
+     * For complex types (LIST, SEXP, STRUCT), it recursively processes their elements.
+     *
+     * @param reader The IonReader containing the value to be coerced.
+     * @param type The IonType of the value to be coerced.
+     * @return A string representation of the Ion value.
+     * @throws IllegalArgumentException if the IonType is not supported for text coercion.
+     * @throws IonException if there's an error reading from the IonReader.
+     */
+    private static String coerceToString(IonReader reader, IonType type)
+    {
+        switch (type) {
+            case BOOL:
+                return Boolean.toString(reader.booleanValue());
+            case INT:
+                return Long.toString(reader.longValue());
+            case FLOAT:
+                return Double.toString(reader.doubleValue());
+            case DECIMAL:
+                return reader.decimalValue().toString();
+            case TIMESTAMP:
+                return reader.timestampValue().toString();
+            case SYMBOL:
+            case STRING:
+                return reader.stringValue();
+            case CLOB:
+            case BLOB:
+                return new String(reader.newBytes(), StandardCharsets.UTF_8);
+            case LIST:
+            case SEXP:
+                StringBuilder sb = new StringBuilder("[");
+                reader.stepIn();
+                while (reader.next() != null) {
+                    if (sb.length() > 1) {
+                        sb.append(", ");
+                    }
+                    sb.append(coerceToString(reader, reader.getType()));
+                }
+                reader.stepOut();
+                return sb.append("]").toString();
+            case STRUCT:
+                sb = new StringBuilder("{");
+                reader.stepIn();
+                while (reader.next() != null) {
+                    if (sb.length() > 1) {
+                        sb.append(", ");
+                    }
+                    sb.append(reader.getFieldName()).append(": ").append(coerceToString(reader, reader.getType()));
+                }
+                reader.stepOut();
+                return sb.append("}").toString();
+            default:
+                throw new IllegalArgumentException(String.format("Text coercion is not supported for IonType: %s", type));
+        }
     }
 
     /**
