@@ -130,16 +130,28 @@ public class IonPageSourceSmokeTest
             throws IOException
     {
         TestFixture defaultFixture = new TestFixture(FOO_BAR_COLUMNS);
-        defaultFixture.assertRowCount("37 null.timestamp", 2);
+        defaultFixture.assertRowCount("37 null.timestamp []", 3);
 
         TestFixture laxFixture = new TestFixture(FOO_BAR_COLUMNS);
         laxFixture.withStrictPathTyping("false");
-        laxFixture.assertRowCount("37 null.timestamp", 2);
+        laxFixture.assertRowCount("37 null.timestamp []", 3);
 
         TestFixture strictFixture = new TestFixture(FOO_BAR_COLUMNS);
         strictFixture.withStrictPathTyping("true");
+
         Assertions.assertThrows(TrinoException.class, () ->
-                strictFixture.assertRowCount("37 null.timestamp", 2));
+                strictFixture.assertRowCount("37 null.timestamp []", 3));
+    }
+
+    @Test
+    public void testPathExtraction()
+            throws IOException
+    {
+        TestFixture fixture = new TestFixture(List.of(toHiveBaseColumnHandle("bar", INTEGER, 0)))
+                .withSerdeProperty("ion.bar.path_extractor", "(foo bar)");
+
+        // these would result in errors if we tried to extract the bar field from the root instead of the nested bar
+        fixture.assertRowCount("{ foo: { bar: 17 }, bar: not_this_bar } { foo: { bar: 31 }, bar: not_this_bar }", 2);
     }
 
     @Test
@@ -197,8 +209,8 @@ public class IonPageSourceSmokeTest
                 // Any presence of these properties in the schema will result in an empty PageSource,
                 // regardless of their assigned values.
                 entry("ion.foo.fail_on_overflow", "property_value"),
-                entry("ion.foo.serialize_as", "property_value"),
-                entry("ion.foo.path_extractor", "property_value"));
+                entry("ion.foo.serialize_as", "property_value"));
+                //entry("ion.foo.path_extractor", "property_value"));
     }
 
     private static Map.Entry<String, String> entry(String key, String value)
@@ -212,7 +224,7 @@ public class IonPageSourceSmokeTest
             throws IOException
     {
         TestFixture fixture = new TestFixture(FOO_BAR_COLUMNS)
-                .withSerdeProperties(property);
+                .withSerdeProperty(property.getKey(), property.getValue());
         fixture.writeIonTextFile("{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }");
 
         Optional<ConnectorPageSource> connectorPageSource = fixture.getOptionalPageSource();
@@ -221,11 +233,11 @@ public class IonPageSourceSmokeTest
 
     @ParameterizedTest
     @MethodSource("propertiesWithDefaults")
-    void testPropertiesWithDefaults(Map.Entry<String, String> propertyEntry)
+    void testPropertiesWithDefaults(Map.Entry<String, String> property)
             throws IOException
     {
         TestFixture fixture = new TestFixture(FOO_BAR_COLUMNS)
-                .withSerdeProperties(propertyEntry);
+                .withSerdeProperty(property.getKey(), property.getValue());
         fixture.assertRowCount("{ foo: 31, bar: baz } { foo: 31, bar: \"baz\" }", 2);
     }
 
@@ -345,10 +357,9 @@ public class IonPageSourceSmokeTest
             return this;
         }
 
-        TestFixture withSerdeProperties(Map.Entry<String, String> propertyEntry)
+        TestFixture withSerdeProperty(String key, String value)
         {
-            // The value of the property is just placeholder
-            tableProperties.put(propertyEntry.getKey(), propertyEntry.getValue());
+            tableProperties.put(key, value);
             return this;
         }
 
