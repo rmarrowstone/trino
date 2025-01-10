@@ -440,6 +440,28 @@ public class TestIonFormat
                 List.of(List.of(19, 23)));
     }
 
+    /**
+     * Shows how users can configure mapping sequence positions from Ion values to a Trino row.
+     */
+    @Test
+    public void testPositionalPathExtraction()
+            throws IOException
+    {
+        Map<String, String> pathExtractions = Map.of(
+                "foo", "(0)",
+                "bar", "(1)");
+        RowType rowType = RowType.rowType(
+                field("foo", INTEGER),
+                field("bar", VARCHAR));
+
+        assertValues(
+                rowType,
+                new IonDecoderConfig(pathExtractions, true),
+                "[13, baz] [17, qux]",
+                List.of(13, "baz"),
+                List.of(17, "qux"));
+    }
+
     @Test
     public void testEncode()
             throws IOException
