@@ -24,11 +24,27 @@ import java.util.Map;
  * @param strictTyping whether the path extractions should enforce type expectations.
  *        this only affects type checking of path extractions; any value decoded into
  *        a trino column will be correctly typed or coerced for that column.
+ * @param caseSensitive whether field name matching should be case-sensitive or not.
  */
-public record IonDecoderConfig(Map<String, String> pathExtractors, Boolean strictTyping)
+public record IonDecoderConfig(Map<String, String> pathExtractors, Boolean strictTyping, Boolean caseSensitive)
 {
-    public static IonDecoderConfig defaultConfig()
+    static IonDecoderConfig defaultConfig()
     {
-        return new IonDecoderConfig(Map.of(), false);
+        return new IonDecoderConfig(Map.of(), false, false);
+    }
+
+    IonDecoderConfig withStrictTyping()
+    {
+        return new IonDecoderConfig(pathExtractors, true, caseSensitive);
+    }
+
+    IonDecoderConfig withCaseSensitive()
+    {
+        return new IonDecoderConfig(pathExtractors, strictTyping, true);
+    }
+
+    IonDecoderConfig withPathExtractors(Map<String, String> pathExtractors)
+    {
+        return new IonDecoderConfig(pathExtractors, strictTyping, caseSensitive);
     }
 }

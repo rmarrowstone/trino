@@ -50,8 +50,10 @@ public final class IonReaderOptions
 
         Boolean strictTyping = Boolean.parseBoolean(
                 propertiesMap.getOrDefault(STRICT_PATH_TYPING_PROPERTY, STRICT_PATH_TYPING_DEFAULT));
+        Boolean caseSensitive = Boolean.parseBoolean(
+                propertiesMap.getOrDefault(PATH_EXTRACTION_CASE_SENSITIVITY, PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT));
 
         // n.b.: the hive serde overwrote when there were duplicate extractors defined for a column
-        return new IonDecoderConfig(extractionsBuilder.buildOrThrow(), strictTyping);
+        return new IonDecoderConfig(extractionsBuilder.buildOrThrow(), strictTyping, caseSensitive);
     }
 }

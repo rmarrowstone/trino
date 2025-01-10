@@ -87,7 +87,7 @@ public class IonDecoderFactory
             PageBuilder pageBuilder)
     {
         PathExtractorBuilder<PageExtractionContext> extractorBuilder = PathExtractorBuilder.<PageExtractionContext>standard()
-                .withMatchCaseInsensitive(true);
+                .withMatchCaseInsensitive(!decoderConfig.caseSensitive());
 
         for (int pos = 0; pos < columns.size(); pos++) {
             String name = columns.get(pos).name();

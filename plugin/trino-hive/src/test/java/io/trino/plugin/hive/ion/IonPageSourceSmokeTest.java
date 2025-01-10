@@ -67,8 +67,6 @@ import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERT
 import static io.trino.plugin.hive.ion.IonReaderOptions.FAIL_ON_OVERFLOW_PROPERTY_DEFAULT;
 import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED;
 import static io.trino.plugin.hive.ion.IonReaderOptions.IGNORE_MALFORMED_DEFAULT;
-import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY;
-import static io.trino.plugin.hive.ion.IonReaderOptions.PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT;
 import static io.trino.plugin.hive.ion.IonWriterOptions.BINARY_ENCODING;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_ENCODING_PROPERTY;
 import static io.trino.plugin.hive.ion.IonWriterOptions.ION_SERIALIZATION_AS_NULL_DEFAULT;
@@ -155,6 +153,17 @@ public class IonPageSourceSmokeTest
     }
 
     @Test
+    public void testCaseSensitive()
+            throws IOException
+    {
+        TestFixture fixture = new TestFixture(List.of(toHiveBaseColumnHandle("bar", INTEGER, 0)))
+                .withSerdeProperty("ion.path_extractor.case_sensitive", "true");
+
+        // this would result in errors if we tried to extract the BAR field
+        fixture.assertRowCount("{ BAR: should_be_skipped } { bar: 17 }", 2);
+    }
+
+    @Test
     public void testProjectedColumn()
             throws IOException
     {
@@ -191,7 +200,6 @@ public class IonPageSourceSmokeTest
     {
         return Stream.of(
                 entry(FAIL_ON_OVERFLOW_PROPERTY, FAIL_ON_OVERFLOW_PROPERTY_DEFAULT),
-                entry(PATH_EXTRACTION_CASE_SENSITIVITY, PATH_EXTRACTION_CASE_SENSITIVITY_DEFAULT),
                 entry(IGNORE_MALFORMED, IGNORE_MALFORMED_DEFAULT),
                 entry(ION_TIMESTAMP_OFFSET_PROPERTY, ION_TIMESTAMP_OFFSET_DEFAULT),
                 entry(ION_SERIALIZATION_AS_NULL_PROPERTY, ION_SERIALIZATION_AS_NULL_DEFAULT));
@@ -201,7 +209,6 @@ public class IonPageSourceSmokeTest
     {
         return Stream.of(
                 entry(FAIL_ON_OVERFLOW_PROPERTY, "false"),
-                entry(PATH_EXTRACTION_CASE_SENSITIVITY, "true"),
                 entry(IGNORE_MALFORMED, "true"),
                 entry(ION_TIMESTAMP_OFFSET_PROPERTY, "01:00"),
                 entry(ION_SERIALIZATION_AS_NULL_PROPERTY, "TYPED"),

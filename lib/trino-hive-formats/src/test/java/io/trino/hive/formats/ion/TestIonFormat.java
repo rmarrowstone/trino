@@ -110,7 +110,7 @@ public class TestIonFormat
             throws IOException
     {
         RowType rowType = RowType.rowType(field("foo", INTEGER), field("bar", VARCHAR));
-        IonDecoderConfig decoderConfig = new IonDecoderConfig(Map.of(), true);
+        IonDecoderConfig decoderConfig = IonDecoderConfig.defaultConfig().withStrictTyping();
         List<Object> expected = new ArrayList<>(2);
         expected.add(null);
         expected.add(null);
@@ -201,6 +201,20 @@ public class TestIonFormat
                         field("BAR", VARCHAR)),
                 "{ bar: baz, Foo: 31, foo: 5 }",
                 List.of(5, "baz"));
+    }
+
+    @Test
+    public void testCaseSensitiveExtraction()
+            throws IOException
+    {
+        assertValues(
+                RowType.rowType(
+                        field("Foo", INTEGER),
+                        field("Bar", VARCHAR)),
+                IonDecoderConfig.defaultConfig().withCaseSensitive(),
+                // assumes duplicate fields overwrite, which is asserted in the test above
+                "{ Bar: baz, bar: blegh, Foo: 31, foo: 67 }",
+                List.of(31, "baz"));
     }
 
     @Test
@@ -422,7 +436,7 @@ public class TestIonFormat
         Map<String, String> pathExtractions = Map.of("bar", "(foo bar)", "baz", "(foo baz)");
         assertValues(
                 RowType.rowType(field("qux", BOOLEAN), field("bar", INTEGER), field("baz", VARCHAR)),
-                new IonDecoderConfig(pathExtractions, false),
+                IonDecoderConfig.defaultConfig().withPathExtractors(pathExtractions),
                 "{ foo: { bar: 31, baz: quux }, qux: true }",
                 List.of(true, 31, "quux"));
     }
@@ -434,7 +448,7 @@ public class TestIonFormat
         Map<String, String> pathExtractions = Map.of("tlv", "()");
         assertValues(
                 RowType.rowType(field("tlv", new ArrayType(INTEGER))),
-                new IonDecoderConfig(pathExtractions, false),
+                IonDecoderConfig.defaultConfig().withPathExtractors(pathExtractions),
                 "[13, 17] [19, 23]",
                 List.of(List.of(13, 17)),
                 List.of(List.of(19, 23)));
@@ -456,7 +470,7 @@ public class TestIonFormat
 
         assertValues(
                 rowType,
-                new IonDecoderConfig(pathExtractions, true),
+                IonDecoderConfig.defaultConfig().withPathExtractors(pathExtractions),
                 "[13, baz] [17, qux]",
                 List.of(13, "baz"),
                 List.of(17, "qux"));
