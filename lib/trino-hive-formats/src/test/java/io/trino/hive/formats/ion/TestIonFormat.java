@@ -209,7 +209,7 @@ public class TestIonFormat
                 RowType.rowType(
                         field("foo", VARCHAR)),
                 "{ foo: [1, 2, 3] }",
-                List.of("[1, 2, 3]"));
+                List.of("[1,2,3]"));
         assertValues(
                 RowType.rowType(
                         field("foo", VARCHAR)),
@@ -219,7 +219,7 @@ public class TestIonFormat
                 RowType.rowType(
                         field("foo", VARCHAR)),
                 "{ foo: { nested_foo: 12 } }",
-                List.of("{nested_foo: 12}"));
+                List.of("{nested_foo:12}"));
     }
 
     @Test
